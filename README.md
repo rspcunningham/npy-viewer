@@ -2,7 +2,7 @@
 
 Native macOS `.npy` image viewer for ParaSight data.
 
-Install:
+Install or update:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/install.sh | bash

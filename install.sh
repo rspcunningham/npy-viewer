@@ -25,6 +25,7 @@ fi
 
 need_command curl
 need_command ditto
+need_command shasum
 need_command codesign
 need_command spctl
 
@@ -60,16 +61,39 @@ asset_url="$(
     awk -F'"' -v pattern="$ASSET_PATTERN" '/"browser_download_url"[[:space:]]*:/ && $4 ~ pattern { print $4; exit }'
 )"
 
-if [[ -z "$tag" || -z "$asset_url" ]]; then
+checksum_url="$(
+  printf '%s\n' "$metadata" |
+    awk -F'"' '/"browser_download_url"[[:space:]]*:/ && $4 ~ /SHA256SUMS\.txt$/ { print $4; exit }'
+)"
+
+if [[ -z "$tag" || -z "$asset_url" || -z "$checksum_url" ]]; then
   fail "could not find a latest $ASSET_PATTERN release asset for $REPO"
 fi
 
 zip_path="$tmp_dir/$APP_NAME.zip"
+checksum_path="$tmp_dir/SHA256SUMS.txt"
 extract_dir="$tmp_dir/extract"
 mkdir -p "$extract_dir" "$install_dir"
 
-printf 'Downloading %s %s...\n' "$APP_NAME" "$tag"
+printf 'Installing latest %s %s...\n' "$APP_NAME" "$tag"
+printf 'Downloading archive...\n'
 curl -fL "$asset_url" -o "$zip_path"
+
+printf 'Downloading checksum...\n'
+curl -fsSL "$checksum_url" -o "$checksum_path"
+
+expected_sha="$(
+  awk -v file="$(basename "$asset_url")" '$2 == file { print $1; exit }' "$checksum_path"
+)"
+
+if [[ -z "$expected_sha" ]]; then
+  fail "could not find checksum for $(basename "$asset_url")"
+fi
+
+actual_sha="$(shasum -a 256 "$zip_path" | awk '{ print $1 }')"
+if [[ "$actual_sha" != "$expected_sha" ]]; then
+  fail "checksum mismatch for $(basename "$asset_url")"
+fi
 
 printf 'Extracting...\n'
 ditto -x -k "$zip_path" "$extract_dir"
