@@ -11,11 +11,17 @@ The app keeps the mapped `.npy` payload resident on the CPU for exact hover read
 
 ## Install
 
+One-line installer:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/install.sh | bash
 ```
 
 The installer downloads the latest notarized GitHub Release and installs `NPYViewer.app` into `/Applications` when writable, otherwise `~/Applications`.
+
+Direct zip download:
+
+[NPYViewer-0.0.1-macOS-arm64.zip](https://github.com/rspcunningham/npy-viewer/releases/download/v0.0.1/NPYViewer-0.0.1-macOS-arm64.zip)
 
 To choose a location:
 
