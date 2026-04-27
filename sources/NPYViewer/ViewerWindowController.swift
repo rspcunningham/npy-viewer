@@ -30,6 +30,10 @@ final class ViewerWindowController: NSWindowController {
         viewerViewController.open(url: url)
     }
 
+    func openDocument() {
+        viewerViewController.openDocument()
+    }
+
     func resetZoom() {
         viewerViewController.resetZoom()
     }

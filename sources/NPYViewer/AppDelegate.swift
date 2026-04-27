@@ -1,6 +1,4 @@
 import AppKit
-import UniformTypeIdentifiers
-
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: ViewerWindowController?
     private var pendingOpenURLs: [URL] = []
@@ -41,19 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openDocument(_ sender: Any?) {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        if let npyType = UTType(filenameExtension: "npy") {
-            panel.allowedContentTypes = [npyType]
-        }
-
-        guard panel.runModal() == .OK, let url = panel.url else {
-            return
-        }
-
-        windowController?.open(url: url)
+        windowController?.openDocument()
     }
 
     @objc func resetZoom(_ sender: Any?) {

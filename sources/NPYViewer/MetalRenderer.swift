@@ -210,15 +210,6 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         onDisplayChanged?()
     }
 
-    func cycleComplexMode() {
-        let modes: [DisplayMode] = [.complexAbs, .complexPhase, .complexReal, .complexImag]
-        guard let index = modes.firstIndex(of: displayMode) else {
-            setDisplayMode(.complexAbs)
-            return
-        }
-        setDisplayMode(modes[(index + 1) % modes.count])
-    }
-
     func requestDraw() {
         view?.needsDisplay = true
     }
@@ -375,6 +366,8 @@ private extension MetalRenderer {
             value = sample.r;
         } else if (mode == 4) {
             value = sample.g;
+        } else if (mode == 5) {
+            value = dot(sample.rg, sample.rg);
         }
 
         value = clamp(value, 0.0, 1.0);

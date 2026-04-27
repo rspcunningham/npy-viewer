@@ -7,7 +7,6 @@ protocol ImageMetalViewDelegate: AnyObject {
     func imageMetalViewDidEndHover(_ view: ImageMetalView)
     func imageMetalView(_ view: ImageMetalView, didZoomBy factor: CGFloat, around point: CGPoint)
     func imageMetalView(_ view: ImageMetalView, didPanBy delta: CGSize)
-    func imageMetalView(_ view: ImageMetalView, didPress key: String)
 }
 
 final class ImageMetalView: MTKView {
@@ -24,15 +23,6 @@ final class ImageMetalView: MTKView {
     required init(coder: NSCoder) {
         super.init(coder: coder)
         commonInit()
-    }
-
-    override var acceptsFirstResponder: Bool {
-        true
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.makeFirstResponder(self)
     }
 
     override func updateTrackingAreas() {
@@ -58,7 +48,6 @@ final class ImageMetalView: MTKView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
         lastDragPoint = topLeftPoint(for: event)
     }
 
@@ -85,14 +74,6 @@ final class ImageMetalView: MTKView {
 
     override func mouseExited(with event: NSEvent) {
         interactionDelegate?.imageMetalViewDidEndHover(self)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if let characters = event.charactersIgnoringModifiers?.lowercased(), !characters.isEmpty {
-            interactionDelegate?.imageMetalView(self, didPress: characters)
-        } else {
-            super.keyDown(with: event)
-        }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {

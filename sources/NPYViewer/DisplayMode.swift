@@ -6,6 +6,7 @@ enum DisplayMode: UInt32, CaseIterable {
     case complexPhase = 2
     case complexReal = 3
     case complexImag = 4
+    case complexIntensity = 5
 
     var label: String {
         switch self {
@@ -19,6 +20,8 @@ enum DisplayMode: UInt32, CaseIterable {
             "real"
         case .complexImag:
             "imag"
+        case .complexIntensity:
+            "intensity"
         }
     }
 
@@ -34,6 +37,8 @@ enum DisplayMode: UInt32, CaseIterable {
             "Real"
         case .complexImag:
             "Imag"
+        case .complexIntensity:
+            "Intensity"
         }
     }
 }

@@ -3,11 +3,22 @@ import MetalKit
 import NPYCore
 import UniformTypeIdentifiers
 
+final class CanvasEmptyStateView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hitView = super.hitTest(point)
+        return hitView === self ? nil : hitView
+    }
+}
+
 final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let metalView = ImageMetalView(frame: .zero, device: nil)
+    private let emptyStateView = CanvasEmptyStateView()
+    private let emptyStateLabel = NSTextField(labelWithString: "Open a .npy file to begin")
+    private let emptyStateButton = NSButton(title: "Open File...", target: nil, action: nil)
     private let modePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let colorMapPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let fileLabel = NSTextField(labelWithString: "Drop a .npy file or use File > Open")
+    private let homeButton = NSButton(frame: .zero)
+    private let fileLabel = NSTextField(labelWithString: "No file")
     private let shapeLabel = NSTextField(labelWithString: "shape -")
     private let dtypeLabel = NSTextField(labelWithString: "dtype -")
     private let cursorLabel = NSTextField(labelWithString: "x -  y -")
@@ -29,6 +40,10 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         metalView.interactionDelegate = self
         view.addSubview(metalView)
 
+        emptyStateView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(emptyStateView)
+        configureEmptyState()
+
         let sidebar = makeSidebar()
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sidebar)
@@ -42,6 +57,11 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
             metalView.trailingAnchor.constraint(equalTo: divider.leadingAnchor),
             metalView.topAnchor.constraint(equalTo: view.topAnchor),
             metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            emptyStateView.leadingAnchor.constraint(equalTo: metalView.leadingAnchor),
+            emptyStateView.trailingAnchor.constraint(equalTo: metalView.trailingAnchor),
+            emptyStateView.topAnchor.constraint(equalTo: metalView.topAnchor),
+            emptyStateView.bottomAnchor.constraint(equalTo: metalView.bottomAnchor),
 
             divider.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
             divider.topAnchor.constraint(equalTo: view.topAnchor),
@@ -71,9 +91,27 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         updateInspector()
     }
 
+    func openDocument() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        if let npyType = UTType(filenameExtension: "npy") {
+            panel.allowedContentTypes = [npyType]
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return
+        }
+
+        open(url: url)
+    }
+
     func open(url: URL) {
         openRequestID &+= 1
         let requestID = openRequestID
+        emptyStateLabel.stringValue = "Opening \(url.lastPathComponent)..."
+        emptyStateButton.isHidden = true
         fileLabel.stringValue = "Opening \(url.lastPathComponent)..."
         shapeLabel.stringValue = "shape -"
         dtypeLabel.stringValue = "dtype -"
@@ -136,29 +174,6 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         renderer?.pan(by: delta)
     }
 
-    func imageMetalView(_ view: ImageMetalView, didPress key: String) {
-        guard let renderer else {
-            return
-        }
-
-        switch key {
-        case "a":
-            renderer.setDisplayMode(.complexAbs)
-        case "p":
-            renderer.setDisplayMode(.complexPhase)
-        case "r":
-            renderer.setDisplayMode(.complexReal)
-        case "i":
-            renderer.setDisplayMode(.complexImag)
-        case "m":
-            renderer.cycleComplexMode()
-        case "0":
-            resetZoom()
-        default:
-            return
-        }
-    }
-
     @objc private func modeChanged(_ sender: NSPopUpButton) {
         guard let mode = DisplayMode(rawValue: UInt32(sender.selectedTag())) else {
             return
@@ -177,6 +192,14 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         updateInspector()
     }
 
+    @objc private func homeButtonPressed(_ sender: NSButton) {
+        resetZoom()
+    }
+
+    @objc private func emptyStateOpenButtonPressed(_ sender: NSButton) {
+        openDocument()
+    }
+
     private func makeSidebar() -> NSView {
         let sidebar = NSView()
         sidebar.wantsLayer = true
@@ -189,6 +212,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         ).cgColor
 
         configurePopUps()
+        configureHomeButton()
         configureMetadataLabels()
 
         let stack = NSStackView()
@@ -200,7 +224,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
         stack.addArrangedSubview(makeControlGroup(title: "Mode", control: modePopUp))
         stack.addArrangedSubview(makeControlGroup(title: "Colormap", control: colorMapPopUp))
-        stack.addArrangedSubview(makeSpacer(height: 12))
+        stack.addArrangedSubview(homeButton)
+        stack.addArrangedSubview(makeSpacer(height: 10))
         stack.addArrangedSubview(fileLabel)
         stack.addArrangedSubview(shapeLabel)
         stack.addArrangedSubview(dtypeLabel)
@@ -219,6 +244,33 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         ])
 
         return sidebar
+    }
+
+    private func configureEmptyState() {
+        emptyStateView.wantsLayer = true
+        emptyStateView.layer?.backgroundColor = NSColor.black.cgColor
+
+        emptyStateLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        emptyStateLabel.textColor = NSColor(white: 0.74, alpha: 1)
+        emptyStateLabel.alignment = .center
+
+        emptyStateButton.target = self
+        emptyStateButton.action = #selector(emptyStateOpenButtonPressed(_:))
+        emptyStateButton.bezelStyle = .rounded
+        emptyStateButton.controlSize = .regular
+        emptyStateButton.font = .systemFont(ofSize: 13)
+
+        let stack = NSStackView(views: [emptyStateLabel, emptyStateButton])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        emptyStateView.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: emptyStateView.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: emptyStateView.centerYAnchor)
+        ])
     }
 
     private func makeDivider() -> NSView {
@@ -248,6 +300,20 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
             colorMapPopUp.addItem(withTitle: colorMap.label)
             colorMapPopUp.lastItem?.tag = Int(colorMap.rawValue)
         }
+    }
+
+    private func configureHomeButton() {
+        homeButton.title = "Reset View"
+        homeButton.target = self
+        homeButton.action = #selector(homeButtonPressed(_:))
+        homeButton.bezelStyle = .rounded
+        homeButton.controlSize = .regular
+        homeButton.font = .systemFont(ofSize: 13)
+        homeButton.image = nil
+        homeButton.imagePosition = .noImage
+        homeButton.toolTip = "Reset view"
+        homeButton.translatesAutoresizingMaskIntoConstraints = false
+        homeButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
     }
 
     private func configureMetadataLabels() {
@@ -301,13 +367,21 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         updateColorMapPopUp()
 
         guard let array = renderer?.array else {
-            fileLabel.stringValue = "Drop a .npy file or use File > Open"
+            emptyStateView.isHidden = false
+            if emptyStateButton.isHidden {
+                emptyStateLabel.stringValue = "Open a .npy file to begin"
+                emptyStateButton.isHidden = false
+            }
+            fileLabel.stringValue = "No file"
             shapeLabel.stringValue = "shape -"
             dtypeLabel.stringValue = "dtype -"
             cursorLabel.stringValue = "x -  y -"
+            homeButton.isEnabled = false
             return
         }
 
+        emptyStateView.isHidden = true
+        homeButton.isEnabled = true
         let file = currentURL?.lastPathComponent ?? array.url.lastPathComponent
         fileLabel.stringValue = file
         shapeLabel.stringValue = "shape \(array.height)x\(array.width)"
@@ -319,7 +393,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         let array = renderer?.array
         let modes: [DisplayMode]
         if array?.elementType == .complex64 {
-            modes = [.complexAbs, .complexPhase, .complexReal, .complexImag]
+            modes = [.complexAbs, .complexIntensity, .complexPhase, .complexReal, .complexImag]
         } else {
             modes = [.scalar]
         }
