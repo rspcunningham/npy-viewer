@@ -9,6 +9,20 @@ This v0.0 build supports 2D C-order NumPy arrays with:
 
 The app keeps the mapped `.npy` payload resident on the CPU for exact hover readout, uploads once to a Metal texture, and renders through `MTKView`.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/install.sh | bash
+```
+
+The installer downloads the latest notarized GitHub Release and installs `NPYViewer.app` into `/Applications` when writable, otherwise `~/Applications`.
+
+To choose a location:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/install.sh | INSTALL_DIR="$HOME/Applications" bash
+```
+
 ## Build
 
 ```bash
