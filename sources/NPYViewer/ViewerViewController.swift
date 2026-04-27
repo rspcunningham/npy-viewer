@@ -11,7 +11,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let shapeLabel = NSTextField(labelWithString: "shape -")
     private let dtypeLabel = NSTextField(labelWithString: "dtype -")
     private let cursorLabel = NSTextField(labelWithString: "x -  y -")
-    private let sidebarWidth: CGFloat = 280
+    private let sidebarWidth: CGFloat = 248
     private let fileLoadQueue = DispatchQueue(label: "com.parasight.NPYViewer.file-load", qos: .userInitiated)
     private var renderer: MetalRenderer?
     private var currentURL: URL?
@@ -33,11 +33,20 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         sidebar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(sidebar)
 
+        let divider = makeDivider()
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(divider)
+
         NSLayoutConstraint.activate([
             metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            metalView.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            metalView.trailingAnchor.constraint(equalTo: divider.leadingAnchor),
             metalView.topAnchor.constraint(equalTo: view.topAnchor),
             metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            divider.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
+            divider.topAnchor.constraint(equalTo: view.topAnchor),
+            divider.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            divider.widthAnchor.constraint(equalToConstant: 1),
 
             sidebar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             sidebar.topAnchor.constraint(equalTo: view.topAnchor),
@@ -171,7 +180,13 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private func makeSidebar() -> NSView {
         let sidebar = NSView()
         sidebar.wantsLayer = true
-        sidebar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        sidebar.appearance = NSAppearance(named: .darkAqua)
+        sidebar.layer?.backgroundColor = NSColor(
+            calibratedRed: 0.105,
+            green: 0.108,
+            blue: 0.116,
+            alpha: 1
+        ).cgColor
 
         configurePopUps()
         configureMetadataLabels()
@@ -179,16 +194,17 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         sidebar.addSubview(stack)
 
-        stack.addArrangedSubview(makeControlRow(title: "Mode", control: modePopUp))
-        stack.addArrangedSubview(makeControlRow(title: "Colormap", control: colorMapPopUp))
-        stack.addArrangedSubview(makeSpacer(height: 10))
+        stack.addArrangedSubview(makeControlGroup(title: "Mode", control: modePopUp))
+        stack.addArrangedSubview(makeControlGroup(title: "Colormap", control: colorMapPopUp))
+        stack.addArrangedSubview(makeSpacer(height: 12))
         stack.addArrangedSubview(fileLabel)
         stack.addArrangedSubview(shapeLabel)
         stack.addArrangedSubview(dtypeLabel)
+        stack.addArrangedSubview(makeSpacer(height: 8))
         stack.addArrangedSubview(cursorLabel)
 
         for arrangedSubview in stack.arrangedSubviews {
@@ -197,22 +213,36 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         }
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
-            stack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -14),
-            stack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 14)
+            stack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -18),
+            stack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 18)
         ])
 
         return sidebar
+    }
+
+    private func makeDivider() -> NSView {
+        let divider = NSView()
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor(
+            calibratedRed: 0.19,
+            green: 0.20,
+            blue: 0.22,
+            alpha: 1
+        ).cgColor
+        return divider
     }
 
     private func configurePopUps() {
         modePopUp.target = self
         modePopUp.action = #selector(modeChanged(_:))
         modePopUp.controlSize = .regular
+        modePopUp.font = .systemFont(ofSize: 13)
 
         colorMapPopUp.target = self
         colorMapPopUp.action = #selector(colorMapChanged(_:))
         colorMapPopUp.controlSize = .regular
+        colorMapPopUp.font = .systemFont(ofSize: 13)
         colorMapPopUp.removeAllItems()
         for colorMap in ColorMap.allCases {
             colorMapPopUp.addItem(withTitle: colorMap.label)
@@ -223,34 +253,40 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private func configureMetadataLabels() {
         for label in [fileLabel, shapeLabel, dtypeLabel, cursorLabel] {
             label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-            label.textColor = .secondaryLabelColor
+            label.textColor = NSColor(white: 0.70, alpha: 1)
             label.maximumNumberOfLines = 2
             label.lineBreakMode = .byTruncatingMiddle
         }
 
-        fileLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        fileLabel.textColor = .labelColor
+        fileLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        fileLabel.textColor = NSColor(white: 0.92, alpha: 1)
         cursorLabel.maximumNumberOfLines = 6
         cursorLabel.lineBreakMode = .byWordWrapping
+        cursorLabel.textColor = NSColor(white: 0.82, alpha: 1)
     }
 
-    private func makeControlRow(title: String, control: NSControl) -> NSView {
-        let titleLabel = NSTextField(labelWithString: title)
-        titleLabel.font = .systemFont(ofSize: 12)
-        titleLabel.textColor = .secondaryLabelColor
-        titleLabel.alignment = .right
+    private func makeControlGroup(title: String, control: NSControl) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title.uppercased())
+        titleLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        titleLabel.textColor = NSColor(white: 0.54, alpha: 1)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.widthAnchor.constraint(equalToConstant: 70).isActive = true
 
         control.translatesAutoresizingMaskIntoConstraints = false
         control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        control.heightAnchor.constraint(equalToConstant: 28).isActive = true
 
-        let row = NSStackView(views: [titleLabel, control])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.distribution = .fill
-        return row
+        let group = NSStackView(views: [titleLabel, control])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 5
+        group.distribution = .fill
+
+        NSLayoutConstraint.activate([
+            titleLabel.widthAnchor.constraint(equalTo: group.widthAnchor),
+            control.widthAnchor.constraint(equalTo: group.widthAnchor)
+        ])
+
+        return group
     }
 
     private func makeSpacer(height: CGFloat) -> NSView {
