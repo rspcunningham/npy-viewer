@@ -1,0 +1,122 @@
+name: Release macOS App
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-sign-notarize:
+    name: Build, sign, notarize, and release
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Import Developer ID certificate
+        env:
+          DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$DEVELOPER_ID_CERTIFICATE_BASE64" || -z "$DEVELOPER_ID_CERTIFICATE_PASSWORD" ]]; then
+            echo "Missing Developer ID certificate secrets." >&2
+            exit 1
+          fi
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+
+          echo "$DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$DEVELOPER_ID_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "$(security default-keychain -d user | tr -d '"')"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+
+          rm -f "$CERTIFICATE_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Test
+        run: swift test
+
+      - name: Build signed and notarized app
+        env:
+          APP_VERSION: ${{ github.ref_name }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          export APP_VERSION="${APP_VERSION#v}"
+          ./script/package_release.sh
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          APP_VERSION="${GITHUB_REF_NAME#v}"
+          ZIP="dist/release/NPYViewer-${APP_VERSION}-macOS-arm64.zip"
+          CHECKSUMS="dist/release/SHA256SUMS.txt"
+          NOTES="$RUNNER_TEMP/release-notes.md"
+
+          cat > "$NOTES" <<EOF
+          Native macOS Metal viewer for 2D NumPy .npy images.
+
+          Install with:
+
+          \`\`\`bash
+          curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/install.sh | bash
+          \`\`\`
+
+          This release includes a Developer ID signed and Apple-notarized macOS app bundle.
+
+          Supported inputs:
+          - 2D C-order float32 (.npy dtype <f4)
+          - 2D C-order complex64 (.npy dtype <c8)
+
+          Validation:
+          - Stapled ticket validated
+          - Gatekeeper accepted as Notarized Developer ID
+
+          SHA-256:
+          \`\`\`
+          $(cat "$CHECKSUMS")
+          \`\`\`
+          EOF
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$ZIP" "$CHECKSUMS" --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file "$NOTES"
+          else
+            gh release create "$GITHUB_REF_NAME" "$ZIP" "$CHECKSUMS" \
+              --target "$GITHUB_SHA" \
+              --title "NPYViewer $GITHUB_REF_NAME" \
+              --notes-file "$NOTES"
+          fi

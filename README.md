@@ -74,6 +74,31 @@ If your Developer ID identity has a nonstandard name, set:
 DEVELOPER_ID_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./script/package_release.sh
 ```
 
+## Automated Releases
+
+GitHub Actions can build, Developer ID sign, notarize, staple, validate, and publish a release zip when you push a version tag:
+
+```bash
+git tag v0.0.2
+git push origin v0.0.2
+```
+
+Configure these repository secrets first:
+
+- `DEVELOPER_ID_CERTIFICATE_BASE64`: base64-encoded exported Developer ID `.p12`
+- `DEVELOPER_ID_CERTIFICATE_PASSWORD`: password for that `.p12`
+- `APPLE_ID`: Apple ID email for notarization
+- `APPLE_TEAM_ID`: Apple Developer team ID
+- `APPLE_APP_SPECIFIC_PASSWORD`: app-specific password for `notarytool`
+
+Create the certificate secret from an exported `.p12`:
+
+```bash
+base64 -i DeveloperIDApplication.p12 | pbcopy
+```
+
+The workflow only runs on `v*` tag pushes so signing credentials are not exposed to pull requests.
+
 ## Run
 
 ```bash
