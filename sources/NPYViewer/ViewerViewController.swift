@@ -29,10 +29,12 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         let url: URL
     }
 
+    private static let emptyStatePrompt = "Open a .npy file or directory to begin"
+
     private let metalView = ImageMetalView(frame: .zero, device: nil)
     private let emptyStateView = CanvasEmptyStateView()
-    private let emptyStateLabel = NSTextField(labelWithString: "Open a .npy file to begin")
-    private let emptyStateButton = NSButton(title: "Open File...", target: nil, action: nil)
+    private let emptyStateLabel = NSTextField(labelWithString: ViewerViewController.emptyStatePrompt)
+    private let emptyStateButton = NSButton(title: "Open File or Directory...", target: nil, action: nil)
     private let fileNavigatorContainer = NSView()
     private let fileNavigatorTable = NSTableView()
     private let fileNavigatorScrollView = NSScrollView()
@@ -662,7 +664,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         guard let array = renderer?.array else {
             emptyStateView.isHidden = false
             if emptyStateButton.isHidden {
-                emptyStateLabel.stringValue = "Open a .npy file to begin"
+                emptyStateLabel.stringValue = Self.emptyStatePrompt
                 emptyStateButton.isHidden = false
             }
             fileLabel.stringValue = "No file"
