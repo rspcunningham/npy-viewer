@@ -78,7 +78,7 @@ public enum NPYError: LocalizedError {
     }
 }
 
-public final class NPYArray {
+public final class NPYArray: @unchecked Sendable {
     public let url: URL
     public let fileData: Data
     public let dataOffset: Int
@@ -149,6 +149,10 @@ private extension NPYArray {
         let elementType: NPYElementType
     }
 
+    static let dtypeRegex = try! NSRegularExpression(pattern: #"["']descr["']\s*:\s*["']([^"']+)["']"#)
+    static let fortranOrderRegex = try! NSRegularExpression(pattern: #"["']fortran_order["']\s*:\s*(True|False)"#)
+    static let shapeRegex = try! NSRegularExpression(pattern: #"["']shape["']\s*:\s*\(([^\)]*)\)"#)
+
     static func parse(data: Data) throws -> ParsedHeader {
         guard data.count >= 10 else {
             throw NPYError.badMagic
@@ -195,9 +199,9 @@ private extension NPYArray {
             throw NPYError.malformedHeader("header is not text")
         }
 
-        let dtype = try capture(pattern: #"["']descr["']\s*:\s*["']([^"']+)["']"#, in: header)
-        let fortranOrder = try capture(pattern: #"["']fortran_order["']\s*:\s*(True|False)"#, in: header)
-        let shapeText = try capture(pattern: #"["']shape["']\s*:\s*\(([^\)]*)\)"#, in: header)
+        let dtype = try capture(regex: dtypeRegex, field: "descr", in: header)
+        let fortranOrder = try capture(regex: fortranOrderRegex, field: "fortran_order", in: header)
+        let shapeText = try capture(regex: shapeRegex, field: "shape", in: header)
 
         guard fortranOrder == "False" else {
             throw NPYError.fortranOrderUnsupported
@@ -236,15 +240,14 @@ private extension NPYArray {
         data[data.startIndex + offset]
     }
 
-    static func capture(pattern: String, in text: String) throws -> String {
-        let regex = try NSRegularExpression(pattern: pattern)
+    static func capture(regex: NSRegularExpression, field: String, in text: String) throws -> String {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         guard
             let match = regex.firstMatch(in: text, range: range),
             match.numberOfRanges >= 2,
             let matchRange = Range(match.range(at: 1), in: text)
         else {
-            throw NPYError.malformedHeader("missing field for pattern \(pattern)")
+            throw NPYError.malformedHeader("missing \(field) field")
         }
         return String(text[matchRange])
     }

@@ -6,9 +6,21 @@ import UniformTypeIdentifiers
 final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let metalView = ImageMetalView(frame: .zero, device: nil)
     private let overlay = OverlayTextField(labelWithString: "")
+    private let fileLoadQueue = DispatchQueue(label: "com.parasight.NPYViewer.file-load", qos: .userInitiated)
     private var renderer: MetalRenderer?
     private var currentURL: URL?
     private var hoverText: String?
+    private var overlayText = ""
+    private var openRequestID = 0
+    private let overlayAttributes: [NSAttributedString.Key: Any] = {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 3
+        return [
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph
+        ]
+    }()
 
     var onTitleChanged: ((String) -> Void)?
 
@@ -61,15 +73,28 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     }
 
     func open(url: URL) {
-        do {
-            let array = try NPYArray(contentsOf: url)
-            try renderer?.setArray(array)
-            currentURL = url
-            hoverText = nil
-            onTitleChanged?(url.lastPathComponent)
-            updateOverlay()
-        } catch {
-            showError(error, title: "Could Not Open \(url.lastPathComponent)")
+        openRequestID &+= 1
+        let requestID = openRequestID
+        setOverlayText("Opening \(url.lastPathComponent)...")
+
+        fileLoadQueue.async { [weak self] in
+            let result = Result {
+                try NPYArray(contentsOf: url)
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.openRequestID == requestID else {
+                    return
+                }
+
+                switch result {
+                case .success(let array):
+                    self.finishOpen(array: array, url: url)
+                case .failure(let error):
+                    self.showError(error, title: "Could Not Open \(url.lastPathComponent)")
+                    self.updateOverlay()
+                }
+            }
         }
     }
 
@@ -90,18 +115,15 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
             let coordinate = renderer.imageCoordinate(for: point),
             let value = array.pixelValue(x: coordinate.x, y: coordinate.y)
         else {
-            hoverText = nil
-            updateOverlay()
+            setHoverText(nil)
             return
         }
 
-        hoverText = "x \(coordinate.x)  y \(coordinate.y)  \(value.displayString)"
-        updateOverlay()
+        setHoverText("x \(coordinate.x)  y \(coordinate.y)  \(value.displayString)")
     }
 
     func imageMetalViewDidEndHover(_ view: ImageMetalView) {
-        hoverText = nil
-        updateOverlay()
+        setHoverText(nil)
     }
 
     func imageMetalView(_ view: ImageMetalView, didZoomBy factor: CGFloat, around point: CGPoint) {
@@ -150,18 +172,44 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     }
 
     private func setOverlayText(_ text: String) {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3
+        guard overlayText != text else {
+            return
+        }
+
+        overlayText = text
         overlay.attributedStringValue = NSAttributedString(
             string: text,
-            attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-                .foregroundColor: NSColor.white,
-                .paragraphStyle: paragraph
-            ]
+            attributes: overlayAttributes
         )
         overlay.invalidateIntrinsicContentSize()
         overlay.needsDisplay = true
+    }
+
+    private func setHoverText(_ text: String?) {
+        guard hoverText != text else {
+            return
+        }
+
+        hoverText = text
+        updateOverlay()
+    }
+
+    private func finishOpen(array: NPYArray, url: URL) {
+        let previousURL = currentURL
+        let previousHoverText = hoverText
+        currentURL = url
+        hoverText = nil
+
+        do {
+            try renderer?.setArray(array)
+            onTitleChanged?(url.lastPathComponent)
+            updateOverlay()
+        } catch {
+            currentURL = previousURL
+            hoverText = previousHoverText
+            showError(error, title: "Could Not Open \(url.lastPathComponent)")
+            updateOverlay()
+        }
     }
 
     private func showError(_ error: Error, title: String) {

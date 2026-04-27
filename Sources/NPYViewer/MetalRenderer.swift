@@ -76,8 +76,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         view.device = device
         view.clearColor = MTLClearColor(red: 0.025, green: 0.026, blue: 0.028, alpha: 1)
         view.framebufferOnly = true
-        view.enableSetNeedsDisplay = false
-        view.isPaused = false
+        view.enableSetNeedsDisplay = true
+        view.isPaused = true
         view.delegate = self
     }
 
@@ -181,12 +181,20 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
     func setDisplayMode(_ mode: DisplayMode) {
         guard array?.elementType == .complex64 else {
+            guard displayMode != .scalar else {
+                return
+            }
             displayMode = .scalar
             onDisplayChanged?()
             return
         }
 
-        displayMode = mode == .scalar ? .complexAbs : mode
+        let nextMode: DisplayMode = mode == .scalar ? .complexAbs : mode
+        guard displayMode != nextMode else {
+            return
+        }
+
+        displayMode = nextMode
         requestDraw()
         onDisplayChanged?()
     }
@@ -206,6 +214,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
         resetView()
+        requestDraw()
         onDisplayChanged?()
     }
 
