@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="NPYViewer"
 BUNDLE_ID="com.parasight.NPYViewer"
-MIN_SYSTEM_VERSION="26.0"
+MIN_SYSTEM_VERSION="15.0"
 APP_VERSION="${APP_VERSION:-0.0.1}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 SIGNING_MODE="${SIGNING_MODE:-development}"
