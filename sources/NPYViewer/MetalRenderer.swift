@@ -42,6 +42,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private var texture: MTLTexture?
     private(set) var displayMode: DisplayMode = .scalar
     private(set) var colorMap: ColorMap = .gray
+    private(set) var window: Float = 1
+    private(set) var level: Float = 0.5
     private var scale: CGFloat = 1
     private var offset: CGPoint = .zero
 
@@ -112,6 +114,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         self.array = array
         self.texture = texture
         self.displayMode = array.elementType == .complex64 ? .complexAbs : .scalar
+        resetWindowLevel()
         resetView()
         requestDraw()
         onDisplayChanged?()
@@ -210,6 +213,23 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         onDisplayChanged?()
     }
 
+    func setWindowLevel(window: Float, level: Float) {
+        let nextWindow = min(max(window, 0.01), 1)
+        let nextLevel = min(max(level, 0), 1)
+        guard self.window != nextWindow || self.level != nextLevel else {
+            return
+        }
+
+        self.window = nextWindow
+        self.level = nextLevel
+        requestDraw()
+        onDisplayChanged?()
+    }
+
+    func resetWindowLevel() {
+        setWindowLevel(window: 1, level: 0.5)
+    }
+
     func requestDraw() {
         view?.needsDisplay = true
     }
@@ -240,8 +260,10 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
             var mode = displayMode.rawValue
             var colorMapRaw = colorMap.rawValue
+            var windowLevel = SIMD2<Float>(window, level)
             encoder.setFragmentBytes(&mode, length: MemoryLayout<UInt32>.size, index: 0)
             encoder.setFragmentBytes(&colorMapRaw, length: MemoryLayout<UInt32>.size, index: 1)
+            encoder.setFragmentBytes(&windowLevel, length: MemoryLayout<SIMD2<Float>>.size, index: 2)
             encoder.setFragmentTexture(texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: vertices.count)
         }
@@ -352,7 +374,8 @@ private extension MetalRenderer {
     fragment float4 fragment_main(VertexOut in [[stage_in]],
                                   texture2d<float> image [[texture(0)]],
                                   constant uint &mode [[buffer(0)]],
-                                  constant uint &colorMap [[buffer(1)]]) {
+                                  constant uint &colorMap [[buffer(1)]],
+                                  constant float2 &windowLevel [[buffer(2)]]) {
         constexpr sampler imageSampler(address::clamp_to_edge, filter::linear);
         float4 sample = image.sample(imageSampler, in.texCoord);
         float value = sample.r;
@@ -370,6 +393,9 @@ private extension MetalRenderer {
             value = dot(sample.rg, sample.rg);
         }
 
+        float window = max(windowLevel.x, 0.01);
+        float level = windowLevel.y;
+        value = (value - (level - window * 0.5)) / window;
         value = clamp(value, 0.0, 1.0);
         return float4(apply_color_map(value, colorMap), 1.0);
     }

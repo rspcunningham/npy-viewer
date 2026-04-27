@@ -17,6 +17,11 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let emptyStateButton = NSButton(title: "Open File...", target: nil, action: nil)
     private let modePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let colorMapPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let windowSlider = NSSlider(value: 1, minValue: 0.01, maxValue: 1, target: nil, action: nil)
+    private let levelSlider = NSSlider(value: 0.5, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private let windowValueLabel = NSTextField(labelWithString: "1.00")
+    private let levelValueLabel = NSTextField(labelWithString: "0.50")
+    private let resetWindowLevelButton = NSButton(title: "Reset W/L", target: nil, action: nil)
     private let homeButton = NSButton(frame: .zero)
     private let fileLabel = NSTextField(labelWithString: "No file")
     private let shapeLabel = NSTextField(labelWithString: "shape -")
@@ -192,6 +197,19 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         updateInspector()
     }
 
+    @objc private func windowLevelChanged(_ sender: NSSlider) {
+        renderer?.setWindowLevel(
+            window: Float(windowSlider.doubleValue),
+            level: Float(levelSlider.doubleValue)
+        )
+        updateWindowLevelControls()
+    }
+
+    @objc private func resetWindowLevelButtonPressed(_ sender: NSButton) {
+        renderer?.resetWindowLevel()
+        updateInspector()
+    }
+
     @objc private func homeButtonPressed(_ sender: NSButton) {
         resetZoom()
     }
@@ -212,6 +230,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         ).cgColor
 
         configurePopUps()
+        configureWindowLevelControls()
         configureHomeButton()
         configureMetadataLabels()
 
@@ -224,6 +243,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
         stack.addArrangedSubview(makeControlGroup(title: "Mode", control: modePopUp))
         stack.addArrangedSubview(makeControlGroup(title: "Colormap", control: colorMapPopUp))
+        stack.addArrangedSubview(makeWindowLevelGroup())
         stack.addArrangedSubview(homeButton)
         stack.addArrangedSubview(makeSpacer(height: 10))
         stack.addArrangedSubview(fileLabel)
@@ -302,6 +322,32 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         }
     }
 
+    private func configureWindowLevelControls() {
+        for slider in [windowSlider, levelSlider] {
+            slider.target = self
+            slider.action = #selector(windowLevelChanged(_:))
+            slider.controlSize = .small
+            slider.isContinuous = true
+            slider.translatesAutoresizingMaskIntoConstraints = false
+            slider.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        }
+
+        for label in [windowValueLabel, levelValueLabel] {
+            label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+            label.textColor = NSColor(white: 0.76, alpha: 1)
+            label.alignment = .right
+        }
+
+        resetWindowLevelButton.target = self
+        resetWindowLevelButton.action = #selector(resetWindowLevelButtonPressed(_:))
+        resetWindowLevelButton.bezelStyle = .rounded
+        resetWindowLevelButton.controlSize = .small
+        resetWindowLevelButton.font = .systemFont(ofSize: 12)
+        resetWindowLevelButton.toolTip = "Reset window and level"
+        resetWindowLevelButton.translatesAutoresizingMaskIntoConstraints = false
+        resetWindowLevelButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
+    }
+
     private func configureHomeButton() {
         homeButton.title = "Reset View"
         homeButton.target = self
@@ -332,10 +378,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     }
 
     private func makeControlGroup(title: String, control: NSControl) -> NSView {
-        let titleLabel = NSTextField(labelWithString: title.uppercased())
-        titleLabel.font = .systemFont(ofSize: 10, weight: .medium)
-        titleLabel.textColor = NSColor(white: 0.54, alpha: 1)
-        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        let titleLabel = makeSectionTitleLabel(title)
 
         control.translatesAutoresizingMaskIntoConstraints = false
         control.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -355,6 +398,61 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         return group
     }
 
+    private func makeWindowLevelGroup() -> NSView {
+        let titleLabel = makeSectionTitleLabel("Window / Level")
+        let windowRow = makeSliderRow(title: "Window", valueLabel: windowValueLabel)
+        let levelRow = makeSliderRow(title: "Level", valueLabel: levelValueLabel)
+
+        let group = NSStackView(views: [
+            titleLabel,
+            windowRow,
+            windowSlider,
+            levelRow,
+            levelSlider,
+            resetWindowLevelButton
+        ])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 5
+        group.distribution = .fill
+
+        NSLayoutConstraint.activate([
+            titleLabel.widthAnchor.constraint(equalTo: group.widthAnchor),
+            windowRow.widthAnchor.constraint(equalTo: group.widthAnchor),
+            windowSlider.widthAnchor.constraint(equalTo: group.widthAnchor),
+            levelRow.widthAnchor.constraint(equalTo: group.widthAnchor),
+            levelSlider.widthAnchor.constraint(equalTo: group.widthAnchor),
+            resetWindowLevelButton.widthAnchor.constraint(equalTo: group.widthAnchor)
+        ])
+
+        return group
+    }
+
+    private func makeSliderRow(title: String, valueLabel: NSTextField) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        titleLabel.textColor = NSColor(white: 0.70, alpha: 1)
+
+        let row = NSStackView(views: [titleLabel, valueLabel])
+        row.orientation = .horizontal
+        row.alignment = .firstBaseline
+        row.spacing = 8
+        row.distribution = .fill
+
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        valueLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        return row
+    }
+
+    private func makeSectionTitleLabel(_ title: String) -> NSTextField {
+        let titleLabel = NSTextField(labelWithString: title.uppercased())
+        titleLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        titleLabel.textColor = NSColor(white: 0.54, alpha: 1)
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        return titleLabel
+    }
+
     private func makeSpacer(height: CGFloat) -> NSView {
         let spacer = NSView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
@@ -365,6 +463,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private func updateInspector() {
         updateModePopUp()
         updateColorMapPopUp()
+        updateWindowLevelControls()
 
         guard let array = renderer?.array else {
             emptyStateView.isHidden = false
@@ -415,6 +514,21 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         colorMapPopUp.isEnabled = renderer?.array != nil
     }
 
+    private func updateWindowLevelControls() {
+        let hasImage = renderer?.array != nil
+        let window = renderer?.window ?? 1
+        let level = renderer?.level ?? 0.5
+
+        windowSlider.doubleValue = Double(window)
+        levelSlider.doubleValue = Double(level)
+        windowValueLabel.stringValue = formatControlValue(window)
+        levelValueLabel.stringValue = formatControlValue(level)
+
+        windowSlider.isEnabled = hasImage
+        levelSlider.isEnabled = hasImage
+        resetWindowLevelButton.isEnabled = hasImage
+    }
+
     private func updateCursorText() {
         guard let array = renderer?.array else {
             cursorLabel.stringValue = "x -  y -"
@@ -461,6 +575,10 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
     private func paddedField(_ field: String) -> String {
         field.padding(toLength: 5, withPad: " ", startingAt: 0)
+    }
+
+    private func formatControlValue(_ value: Float) -> String {
+        String(format: "%.2f", Double(value))
     }
 
     private func setHoverText(_ text: String?) {
