@@ -21,4 +21,19 @@ enum DisplayMode: UInt32, CaseIterable {
             "imag"
         }
     }
+
+    var menuLabel: String {
+        switch self {
+        case .scalar:
+            "Scalar"
+        case .complexAbs:
+            "Abs"
+        case .complexPhase:
+            "Phase"
+        case .complexReal:
+            "Real"
+        case .complexImag:
+            "Imag"
+        }
+    }
 }

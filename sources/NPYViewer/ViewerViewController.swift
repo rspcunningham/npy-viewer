@@ -5,24 +5,18 @@ import UniformTypeIdentifiers
 
 final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let metalView = ImageMetalView(frame: .zero, device: nil)
-    private let overlay = OverlayTextField(labelWithString: "")
-    private let overlayPreferredWidth: CGFloat = 720
+    private let modePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let colorMapPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let fileLabel = NSTextField(labelWithString: "Drop a .npy file or use File > Open")
+    private let shapeLabel = NSTextField(labelWithString: "shape -")
+    private let dtypeLabel = NSTextField(labelWithString: "dtype -")
+    private let cursorLabel = NSTextField(labelWithString: "x -  y -")
+    private let sidebarWidth: CGFloat = 280
     private let fileLoadQueue = DispatchQueue(label: "com.parasight.NPYViewer.file-load", qos: .userInitiated)
     private var renderer: MetalRenderer?
     private var currentURL: URL?
     private var hoverText: String?
-    private var overlayText = ""
     private var openRequestID = 0
-    private let overlayAttributes: [NSAttributedString.Key: Any] = {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3
-        paragraph.lineBreakMode = .byClipping
-        return [
-            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph
-        ]
-    }()
 
     var onTitleChanged: ((String) -> Void)?
 
@@ -35,30 +29,20 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         metalView.interactionDelegate = self
         view.addSubview(metalView)
 
-        overlay.translatesAutoresizingMaskIntoConstraints = false
-        overlay.isEditable = false
-        overlay.isSelectable = false
-        overlay.isBordered = false
-        overlay.drawsBackground = false
-        overlay.textColor = .white
-        overlay.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        overlay.maximumNumberOfLines = 6
-        overlay.lineBreakMode = .byClipping
-        view.addSubview(overlay)
-
-        let overlayWidth = overlay.widthAnchor.constraint(equalToConstant: overlayPreferredWidth)
-        overlayWidth.priority = .defaultHigh
+        let sidebar = makeSidebar()
+        sidebar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(sidebar)
 
         NSLayoutConstraint.activate([
             metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            metalView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            metalView.trailingAnchor.constraint(equalTo: sidebar.leadingAnchor),
             metalView.topAnchor.constraint(equalTo: view.topAnchor),
             metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            overlay.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
-            overlayWidth,
-            overlay.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -24)
+            sidebar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            sidebar.topAnchor.constraint(equalTo: view.topAnchor),
+            sidebar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            sidebar.widthAnchor.constraint(equalToConstant: sidebarWidth)
         ])
     }
 
@@ -68,20 +52,23 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         do {
             let renderer = try MetalRenderer(view: metalView)
             renderer.onDisplayChanged = { [weak self] in
-                self?.updateOverlay()
+                self?.updateInspector()
             }
             self.renderer = renderer
         } catch {
             showError(error, title: "Metal Setup Failed")
         }
 
-        updateOverlay()
+        updateInspector()
     }
 
     func open(url: URL) {
         openRequestID &+= 1
         let requestID = openRequestID
-        setOverlayText("Opening \(url.lastPathComponent)...")
+        fileLabel.stringValue = "Opening \(url.lastPathComponent)..."
+        shapeLabel.stringValue = "shape -"
+        dtypeLabel.stringValue = "dtype -"
+        cursorLabel.stringValue = "x -  y -"
 
         fileLoadQueue.async { [weak self] in
             let result = Result {
@@ -98,7 +85,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
                     self.finishOpen(array: array, url: url)
                 case .failure(let error):
                     self.showError(error, title: "Could Not Open \(url.lastPathComponent)")
-                    self.updateOverlay()
+                    self.updateInspector()
                 }
             }
         }
@@ -107,7 +94,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     func resetZoom() {
         renderer?.resetView()
         renderer?.requestDraw()
-        updateOverlay()
+        updateInspector()
     }
 
     func imageMetalView(_ view: ImageMetalView, didRequestOpen url: URL) {
@@ -163,18 +150,168 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         }
     }
 
-    private func updateOverlay() {
+    @objc private func modeChanged(_ sender: NSPopUpButton) {
+        guard let mode = DisplayMode(rawValue: UInt32(sender.selectedTag())) else {
+            return
+        }
+
+        renderer?.setDisplayMode(mode)
+        updateInspector()
+    }
+
+    @objc private func colorMapChanged(_ sender: NSPopUpButton) {
+        guard let colorMap = ColorMap(rawValue: UInt32(sender.selectedTag())) else {
+            return
+        }
+
+        renderer?.setColorMap(colorMap)
+        updateInspector()
+    }
+
+    private func makeSidebar() -> NSView {
+        let sidebar = NSView()
+        sidebar.wantsLayer = true
+        sidebar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        configurePopUps()
+        configureMetadataLabels()
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        sidebar.addSubview(stack)
+
+        stack.addArrangedSubview(makeControlRow(title: "Mode", control: modePopUp))
+        stack.addArrangedSubview(makeControlRow(title: "Colormap", control: colorMapPopUp))
+        stack.addArrangedSubview(makeSpacer(height: 10))
+        stack.addArrangedSubview(fileLabel)
+        stack.addArrangedSubview(shapeLabel)
+        stack.addArrangedSubview(dtypeLabel)
+        stack.addArrangedSubview(cursorLabel)
+
+        for arrangedSubview in stack.arrangedSubviews {
+            arrangedSubview.translatesAutoresizingMaskIntoConstraints = false
+            arrangedSubview.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: sidebar.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: sidebar.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: sidebar.topAnchor, constant: 14)
+        ])
+
+        return sidebar
+    }
+
+    private func configurePopUps() {
+        modePopUp.target = self
+        modePopUp.action = #selector(modeChanged(_:))
+        modePopUp.controlSize = .regular
+
+        colorMapPopUp.target = self
+        colorMapPopUp.action = #selector(colorMapChanged(_:))
+        colorMapPopUp.controlSize = .regular
+        colorMapPopUp.removeAllItems()
+        for colorMap in ColorMap.allCases {
+            colorMapPopUp.addItem(withTitle: colorMap.label)
+            colorMapPopUp.lastItem?.tag = Int(colorMap.rawValue)
+        }
+    }
+
+    private func configureMetadataLabels() {
+        for label in [fileLabel, shapeLabel, dtypeLabel, cursorLabel] {
+            label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            label.textColor = .secondaryLabelColor
+            label.maximumNumberOfLines = 2
+            label.lineBreakMode = .byTruncatingMiddle
+        }
+
+        fileLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        fileLabel.textColor = .labelColor
+        cursorLabel.maximumNumberOfLines = 6
+        cursorLabel.lineBreakMode = .byWordWrapping
+    }
+
+    private func makeControlRow(title: String, control: NSControl) -> NSView {
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .systemFont(ofSize: 12)
+        titleLabel.textColor = .secondaryLabelColor
+        titleLabel.alignment = .right
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.widthAnchor.constraint(equalToConstant: 70).isActive = true
+
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [titleLabel, control])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.distribution = .fill
+        return row
+    }
+
+    private func makeSpacer(height: CGFloat) -> NSView {
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.heightAnchor.constraint(equalToConstant: height).isActive = true
+        return spacer
+    }
+
+    private func updateInspector() {
+        updateModePopUp()
+        updateColorMapPopUp()
+
         guard let array = renderer?.array else {
-            setOverlayText("Drop a .npy file or use File > Open")
+            fileLabel.stringValue = "Drop a .npy file or use File > Open"
+            shapeLabel.stringValue = "shape -"
+            dtypeLabel.stringValue = "dtype -"
+            cursorLabel.stringValue = "x -  y -"
             return
         }
 
         let file = currentURL?.lastPathComponent ?? array.url.lastPathComponent
-        let shape = "\(array.height)x\(array.width)"
-        let dtype = array.elementType.dtypeName
-        let mode = renderer?.displayMode.label ?? "scalar"
-        let hover = hoverText ?? placeholderHoverText(for: array)
-        setOverlayText("\(file)\nshape \(shape)  dtype \(dtype)  mode \(mode)\n\(hover)")
+        fileLabel.stringValue = file
+        shapeLabel.stringValue = "shape \(array.height)x\(array.width)"
+        dtypeLabel.stringValue = "dtype \(array.elementType.dtypeName)"
+        updateCursorText()
+    }
+
+    private func updateModePopUp() {
+        let array = renderer?.array
+        let modes: [DisplayMode]
+        if array?.elementType == .complex64 {
+            modes = [.complexAbs, .complexPhase, .complexReal, .complexImag]
+        } else {
+            modes = [.scalar]
+        }
+
+        modePopUp.removeAllItems()
+        for mode in modes {
+            modePopUp.addItem(withTitle: mode.menuLabel)
+            modePopUp.lastItem?.tag = Int(mode.rawValue)
+        }
+
+        let selectedMode = renderer?.displayMode ?? .scalar
+        modePopUp.selectItem(withTag: Int(selectedMode.rawValue))
+        modePopUp.isEnabled = array != nil && modes.count > 1
+    }
+
+    private func updateColorMapPopUp() {
+        let selectedColorMap = renderer?.colorMap ?? .gray
+        colorMapPopUp.selectItem(withTag: Int(selectedColorMap.rawValue))
+        colorMapPopUp.isEnabled = renderer?.array != nil
+    }
+
+    private func updateCursorText() {
+        guard let array = renderer?.array else {
+            cursorLabel.stringValue = "x -  y -"
+            return
+        }
+
+        cursorLabel.stringValue = hoverText ?? placeholderHoverText(for: array)
     }
 
     private func formatHoverText(
@@ -184,13 +321,20 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     ) -> String {
         let x = fixedWidth(coordinate.x, width: indexWidth(for: array.width))
         let y = fixedWidth(coordinate.y, width: indexWidth(for: array.height))
-        return "x \(x)  y \(y)  \(value.overlayDisplayString)"
+        return """
+        \(paddedField("x")) \(x)
+        \(paddedField("y")) \(y)
+        \(value.sidebarDisplayString)
+        """
     }
 
     private func placeholderHoverText(for array: NPYArray) -> String {
         let x = String(repeating: "-", count: indexWidth(for: array.width))
         let y = String(repeating: "-", count: indexWidth(for: array.height))
-        return "x \(x)  y \(y)"
+        return """
+        \(paddedField("x")) \(x)
+        \(paddedField("y")) \(y)
+        """
     }
 
     private func indexWidth(for count: Int) -> Int {
@@ -205,18 +349,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         return String(repeating: " ", count: width - text.count) + text
     }
 
-    private func setOverlayText(_ text: String) {
-        guard overlayText != text else {
-            return
-        }
-
-        overlayText = text
-        overlay.attributedStringValue = NSAttributedString(
-            string: text,
-            attributes: overlayAttributes
-        )
-        overlay.invalidateIntrinsicContentSize()
-        overlay.needsDisplay = true
+    private func paddedField(_ field: String) -> String {
+        field.padding(toLength: 5, withPad: " ", startingAt: 0)
     }
 
     private func setHoverText(_ text: String?) {
@@ -225,7 +359,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         }
 
         hoverText = text
-        updateOverlay()
+        updateCursorText()
     }
 
     private func finishOpen(array: NPYArray, url: URL) {
@@ -237,12 +371,12 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         do {
             try renderer?.setArray(array)
             onTitleChanged?(url.lastPathComponent)
-            updateOverlay()
+            updateInspector()
         } catch {
             currentURL = previousURL
             hoverText = previousHoverText
             showError(error, title: "Could Not Open \(url.lastPathComponent)")
-            updateOverlay()
+            updateInspector()
         }
     }
 
@@ -256,18 +390,27 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 }
 
 private extension NPYPixelValue {
-    var overlayDisplayString: String {
+    var sidebarDisplayString: String {
         switch self {
         case .scalar(let value):
-            return Self.format(value)
+            return "\(Self.paddedField("value")) \(Self.format(value))"
         case .complex(let real, let imag):
             let magnitude = hypotf(real, imag)
             let phase = atan2f(imag, real)
-            return "real \(Self.format(real))  imag \(Self.format(imag))  abs \(Self.format(magnitude))  phase \(Self.format(phase))"
+            return """
+            \(Self.paddedField("real")) \(Self.format(real))
+            \(Self.paddedField("imag")) \(Self.format(imag))
+            \(Self.paddedField("abs")) \(Self.format(magnitude))
+            \(Self.paddedField("phase")) \(Self.format(phase))
+            """
         }
     }
 
     static func format(_ value: Float) -> String {
         String(format: "% .7f", Double(value))
+    }
+
+    static func paddedField(_ field: String) -> String {
+        field.padding(toLength: 5, withPad: " ", startingAt: 0)
     }
 }

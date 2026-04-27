@@ -41,6 +41,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private(set) var array: NPYArray?
     private var texture: MTLTexture?
     private(set) var displayMode: DisplayMode = .scalar
+    private(set) var colorMap: ColorMap = .gray
     private var scale: CGFloat = 1
     private var offset: CGPoint = .zero
 
@@ -199,6 +200,16 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         onDisplayChanged?()
     }
 
+    func setColorMap(_ colorMap: ColorMap) {
+        guard self.colorMap != colorMap else {
+            return
+        }
+
+        self.colorMap = colorMap
+        requestDraw()
+        onDisplayChanged?()
+    }
+
     func cycleComplexMode() {
         let modes: [DisplayMode] = [.complexAbs, .complexPhase, .complexReal, .complexImag]
         guard let index = modes.firstIndex(of: displayMode) else {
@@ -237,7 +248,9 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             }
 
             var mode = displayMode.rawValue
+            var colorMapRaw = colorMap.rawValue
             encoder.setFragmentBytes(&mode, length: MemoryLayout<UInt32>.size, index: 0)
+            encoder.setFragmentBytes(&colorMapRaw, length: MemoryLayout<UInt32>.size, index: 1)
             encoder.setFragmentTexture(texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: vertices.count)
         }
@@ -299,9 +312,56 @@ private extension MetalRenderer {
         return out;
     }
 
+    float3 ramp(float value,
+                float3 c0,
+                float3 c1,
+                float3 c2,
+                float3 c3,
+                float3 c4) {
+        if (value < 0.25) {
+            return mix(c0, c1, value / 0.25);
+        } else if (value < 0.5) {
+            return mix(c1, c2, (value - 0.25) / 0.25);
+        } else if (value < 0.75) {
+            return mix(c2, c3, (value - 0.5) / 0.25);
+        }
+        return mix(c3, c4, (value - 0.75) / 0.25);
+    }
+
+    float3 apply_color_map(float value, uint colorMap) {
+        if (colorMap == 1) {
+            return ramp(
+                value,
+                float3(0.267, 0.005, 0.329),
+                float3(0.231, 0.322, 0.545),
+                float3(0.129, 0.569, 0.549),
+                float3(0.369, 0.788, 0.384),
+                float3(0.993, 0.906, 0.144)
+            );
+        } else if (colorMap == 2) {
+            return ramp(
+                value,
+                float3(0.000, 0.000, 0.016),
+                float3(0.231, 0.059, 0.439),
+                float3(0.549, 0.161, 0.506),
+                float3(0.871, 0.286, 0.408),
+                float3(0.988, 0.992, 0.749)
+            );
+        } else if (colorMap == 3) {
+            return float3(
+                smoothstep(0.00, 0.45, value),
+                smoothstep(0.35, 0.75, value),
+                smoothstep(0.70, 1.00, value)
+            );
+        }
+
+        return float3(value, value, value);
+    }
+
     fragment float4 fragment_main(VertexOut in [[stage_in]],
                                   texture2d<float> image [[texture(0)]],
-                                  constant uint &mode [[buffer(0)]]) {
+                                  constant uint &mode [[buffer(0)]],
+                                  constant uint &colorMap [[buffer(1)]]) {
         constexpr sampler imageSampler(address::clamp_to_edge, filter::linear);
         float4 sample = image.sample(imageSampler, in.texCoord);
         float value = sample.r;
@@ -318,7 +378,7 @@ private extension MetalRenderer {
         }
 
         value = clamp(value, 0.0, 1.0);
-        return float4(value, value, value, 1.0);
+        return float4(apply_color_map(value, colorMap), 1.0);
     }
     """
 }
