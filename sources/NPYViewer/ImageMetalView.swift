@@ -77,11 +77,11 @@ final class ImageMetalView: MTKView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        npyURL(from: sender.draggingPasteboard) == nil ? [] : .copy
+        openableURL(from: sender.draggingPasteboard) == nil ? [] : .copy
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let url = npyURL(from: sender.draggingPasteboard) else {
+        guard let url = openableURL(from: sender.draggingPasteboard) else {
             return false
         }
         interactionDelegate?.imageMetalView(self, didRequestOpen: url)
@@ -98,14 +98,22 @@ final class ImageMetalView: MTKView {
         return CGPoint(x: point.x, y: bounds.height - point.y)
     }
 
-    private func npyURL(from pasteboard: NSPasteboard) -> URL? {
+    private func openableURL(from pasteboard: NSPasteboard) -> URL? {
         guard
             let text = pasteboard.string(forType: .fileURL),
-            let url = URL(string: text),
-            url.pathExtension.lowercased() == "npy"
+            let url = URL(string: text)
         else {
             return nil
         }
-        return url
+
+        if url.pathExtension.lowercased() == "npy" || isDirectory(url) {
+            return url
+        }
+
+        return nil
+    }
+
+    private func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }

@@ -120,6 +120,16 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         onDisplayChanged?()
     }
 
+    func clearArray() {
+        array = nil
+        texture = nil
+        displayMode = .scalar
+        scale = 1
+        offset = .zero
+        requestDraw()
+        onDisplayChanged?()
+    }
+
     func resetView() {
         guard let array, let view else {
             scale = 1

@@ -10,11 +10,33 @@ final class CanvasEmptyStateView: NSView {
     }
 }
 
-final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
+private enum ViewerOpenError: LocalizedError {
+    case unsupportedFile(URL)
+    case noNPYFiles(URL)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedFile(let url):
+            "Unsupported file \(url.lastPathComponent). Open a .npy file or a directory containing .npy files."
+        case .noNPYFiles(let url):
+            "No .npy files found in \(url.lastPathComponent)."
+        }
+    }
+}
+
+final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    private struct ViewerItem {
+        let url: URL
+    }
+
     private let metalView = ImageMetalView(frame: .zero, device: nil)
     private let emptyStateView = CanvasEmptyStateView()
     private let emptyStateLabel = NSTextField(labelWithString: "Open a .npy file to begin")
     private let emptyStateButton = NSButton(title: "Open File...", target: nil, action: nil)
+    private let fileNavigatorContainer = NSView()
+    private let fileNavigatorTable = NSTableView()
+    private let fileNavigatorScrollView = NSScrollView()
+    private let fileNavigatorDivider = NSView()
     private let modePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let colorMapPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let windowSlider = NSSlider(value: 1, minValue: 0.01, maxValue: 1, target: nil, action: nil)
@@ -27,12 +49,18 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let shapeLabel = NSTextField(labelWithString: "shape -")
     private let dtypeLabel = NSTextField(labelWithString: "dtype -")
     private let cursorLabel = NSTextField(labelWithString: "x -  y -")
+    private let fileNavigatorWidth: CGFloat = 240
     private let sidebarWidth: CGFloat = 248
     private let fileLoadQueue = DispatchQueue(label: "com.parasight.NPYViewer.file-load", qos: .userInitiated)
     private var renderer: MetalRenderer?
-    private var currentURL: URL?
+    private var sessionDirectoryURL: URL?
+    private var sessionItems: [ViewerItem] = []
+    private var selectedSessionIndex: Int?
     private var hoverText: String?
     private var openRequestID = 0
+    private var fileNavigatorWidthConstraint: NSLayoutConstraint?
+    private var fileNavigatorDividerWidthConstraint: NSLayoutConstraint?
+    private var isSynchronizingNavigatorSelection = false
 
     var onTitleChanged: ((String) -> Void)?
 
@@ -40,6 +68,14 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         view = NSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.black.cgColor
+
+        fileNavigatorContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(fileNavigatorContainer)
+        configureFileNavigator()
+
+        fileNavigatorDivider.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(fileNavigatorDivider)
+        configureFileNavigatorDivider()
 
         metalView.translatesAutoresizingMaskIntoConstraints = false
         metalView.interactionDelegate = self
@@ -57,8 +93,23 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         divider.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(divider)
 
+        let fileNavigatorWidthConstraint = fileNavigatorContainer.widthAnchor.constraint(equalToConstant: 0)
+        let fileNavigatorDividerWidthConstraint = fileNavigatorDivider.widthAnchor.constraint(equalToConstant: 0)
+        self.fileNavigatorWidthConstraint = fileNavigatorWidthConstraint
+        self.fileNavigatorDividerWidthConstraint = fileNavigatorDividerWidthConstraint
+
         NSLayoutConstraint.activate([
-            metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            fileNavigatorContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            fileNavigatorContainer.topAnchor.constraint(equalTo: view.topAnchor),
+            fileNavigatorContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            fileNavigatorWidthConstraint,
+
+            fileNavigatorDivider.leadingAnchor.constraint(equalTo: fileNavigatorContainer.trailingAnchor),
+            fileNavigatorDivider.topAnchor.constraint(equalTo: view.topAnchor),
+            fileNavigatorDivider.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            fileNavigatorDividerWidthConstraint,
+
+            metalView.leadingAnchor.constraint(equalTo: fileNavigatorDivider.trailingAnchor),
             metalView.trailingAnchor.constraint(equalTo: divider.leadingAnchor),
             metalView.topAnchor.constraint(equalTo: view.topAnchor),
             metalView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -99,7 +150,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     func openDocument() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.canChooseFiles = true
         if let npyType = UTType(filenameExtension: "npy") {
             panel.allowedContentTypes = [npyType]
@@ -113,8 +164,52 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     }
 
     func open(url: URL) {
+        if isDirectory(url) {
+            openDirectory(url)
+            return
+        }
+
+        guard isNPYFile(url) else {
+            showError(ViewerOpenError.unsupportedFile(url), title: "Could Not Open \(url.lastPathComponent)")
+            return
+        }
+
+        openSession(directoryURL: nil, urls: [url], selectedIndex: 0)
+    }
+
+    private func openDirectory(_ url: URL) {
+        do {
+            let urls = try npyFiles(in: url)
+            guard !urls.isEmpty else {
+                showError(ViewerOpenError.noNPYFiles(url), title: "Could Not Open \(url.lastPathComponent)")
+                return
+            }
+
+            openSession(directoryURL: url, urls: urls, selectedIndex: 0)
+        } catch {
+            showError(error, title: "Could Not Open \(url.lastPathComponent)")
+        }
+    }
+
+    private func openSession(directoryURL: URL?, urls: [URL], selectedIndex: Int) {
+        sessionDirectoryURL = directoryURL
+        sessionItems = urls.map(ViewerItem.init(url:))
+        updateFileNavigator()
+        selectSessionItem(at: selectedIndex)
+    }
+
+    private func selectSessionItem(at index: Int) {
+        guard sessionItems.indices.contains(index) else {
+            return
+        }
+
         openRequestID &+= 1
         let requestID = openRequestID
+        selectedSessionIndex = index
+        hoverText = nil
+        updateFileNavigatorSelection()
+
+        let url = sessionItems[index].url
         emptyStateLabel.stringValue = "Opening \(url.lastPathComponent)..."
         emptyStateButton.isHidden = true
         fileLabel.stringValue = "Opening \(url.lastPathComponent)..."
@@ -136,6 +231,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
                 case .success(let array):
                     self.finishOpen(array: array, url: url)
                 case .failure(let error):
+                    self.renderer?.clearArray()
+                    self.onTitleChanged?(self.title(for: url))
                     self.showError(error, title: "Could Not Open \(url.lastPathComponent)")
                     self.updateInspector()
                 }
@@ -177,6 +274,45 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
     func imageMetalView(_ view: ImageMetalView, didPanBy delta: CGSize) {
         renderer?.pan(by: delta)
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        sessionItems.count
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        guard sessionItems.indices.contains(row) else {
+            return nil
+        }
+
+        let identifier = NSUserInterfaceItemIdentifier("FileNavigatorCell")
+        let label: NSTextField
+        if let reusedLabel = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTextField {
+            label = reusedLabel
+        } else {
+            label = NSTextField(labelWithString: "")
+            label.identifier = identifier
+            label.font = .systemFont(ofSize: 13)
+            label.lineBreakMode = .byTruncatingMiddle
+            label.maximumNumberOfLines = 1
+            label.textColor = NSColor(white: 0.86, alpha: 1)
+        }
+
+        label.stringValue = sessionItems[row].url.lastPathComponent
+        return label
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !isSynchronizingNavigatorSelection else {
+            return
+        }
+
+        let row = fileNavigatorTable.selectedRow
+        guard row >= 0 else {
+            return
+        }
+
+        selectSessionItem(at: row)
     }
 
     @objc private func modeChanged(_ sender: NSPopUpButton) {
@@ -291,6 +427,64 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
             stack.centerXAnchor.constraint(equalTo: emptyStateView.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: emptyStateView.centerYAnchor)
         ])
+    }
+
+    private func configureFileNavigator() {
+        fileNavigatorContainer.wantsLayer = true
+        fileNavigatorContainer.appearance = NSAppearance(named: .darkAqua)
+        fileNavigatorContainer.layer?.backgroundColor = NSColor(
+            calibratedRed: 0.082,
+            green: 0.086,
+            blue: 0.094,
+            alpha: 1
+        ).cgColor
+        fileNavigatorContainer.isHidden = true
+
+        let titleLabel = makeSectionTitleLabel("Files")
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        fileNavigatorContainer.addSubview(titleLabel)
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("filename"))
+        column.resizingMask = .autoresizingMask
+        fileNavigatorTable.addTableColumn(column)
+        fileNavigatorTable.headerView = nil
+        fileNavigatorTable.rowHeight = 28
+        fileNavigatorTable.intercellSpacing = NSSize(width: 0, height: 2)
+        fileNavigatorTable.selectionHighlightStyle = .regular
+        fileNavigatorTable.backgroundColor = .clear
+        fileNavigatorTable.enclosingScrollView?.drawsBackground = false
+        fileNavigatorTable.delegate = self
+        fileNavigatorTable.dataSource = self
+
+        fileNavigatorScrollView.translatesAutoresizingMaskIntoConstraints = false
+        fileNavigatorScrollView.documentView = fileNavigatorTable
+        fileNavigatorScrollView.hasVerticalScroller = true
+        fileNavigatorScrollView.hasHorizontalScroller = false
+        fileNavigatorScrollView.autohidesScrollers = true
+        fileNavigatorScrollView.drawsBackground = false
+        fileNavigatorContainer.addSubview(fileNavigatorScrollView)
+
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: fileNavigatorContainer.leadingAnchor, constant: 14),
+            titleLabel.trailingAnchor.constraint(equalTo: fileNavigatorContainer.trailingAnchor, constant: -14),
+            titleLabel.topAnchor.constraint(equalTo: fileNavigatorContainer.topAnchor, constant: 18),
+
+            fileNavigatorScrollView.leadingAnchor.constraint(equalTo: fileNavigatorContainer.leadingAnchor, constant: 8),
+            fileNavigatorScrollView.trailingAnchor.constraint(equalTo: fileNavigatorContainer.trailingAnchor, constant: -8),
+            fileNavigatorScrollView.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 10),
+            fileNavigatorScrollView.bottomAnchor.constraint(equalTo: fileNavigatorContainer.bottomAnchor, constant: -8)
+        ])
+    }
+
+    private func configureFileNavigatorDivider() {
+        fileNavigatorDivider.wantsLayer = true
+        fileNavigatorDivider.layer?.backgroundColor = NSColor(
+            calibratedRed: 0.19,
+            green: 0.20,
+            blue: 0.22,
+            alpha: 1
+        ).cgColor
+        fileNavigatorDivider.isHidden = true
     }
 
     private func makeDivider() -> NSView {
@@ -481,7 +675,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
         emptyStateView.isHidden = true
         homeButton.isEnabled = true
-        let file = currentURL?.lastPathComponent ?? array.url.lastPathComponent
+        let file = selectedURL?.lastPathComponent ?? array.url.lastPathComponent
         fileLabel.stringValue = file
         shapeLabel.stringValue = "shape \(array.height)x\(array.width)"
         dtypeLabel.stringValue = "dtype \(array.elementType.dtypeName)"
@@ -591,21 +785,82 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     }
 
     private func finishOpen(array: NPYArray, url: URL) {
-        let previousURL = currentURL
         let previousHoverText = hoverText
-        currentURL = url
         hoverText = nil
 
         do {
             try renderer?.setArray(array)
-            onTitleChanged?(url.lastPathComponent)
+            onTitleChanged?(title(for: url))
             updateInspector()
         } catch {
-            currentURL = previousURL
             hoverText = previousHoverText
+            renderer?.clearArray()
+            onTitleChanged?(title(for: url))
             showError(error, title: "Could Not Open \(url.lastPathComponent)")
             updateInspector()
         }
+    }
+
+    private var selectedURL: URL? {
+        guard let selectedSessionIndex, sessionItems.indices.contains(selectedSessionIndex) else {
+            return nil
+        }
+
+        return sessionItems[selectedSessionIndex].url
+    }
+
+    private func title(for url: URL) -> String {
+        guard let sessionDirectoryURL else {
+            return url.lastPathComponent
+        }
+
+        return "\(sessionDirectoryURL.lastPathComponent) - \(url.lastPathComponent)"
+    }
+
+    private func updateFileNavigator() {
+        fileNavigatorTable.reloadData()
+        let shouldShowNavigator = sessionItems.count > 1
+        fileNavigatorWidthConstraint?.constant = shouldShowNavigator ? fileNavigatorWidth : 0
+        fileNavigatorDividerWidthConstraint?.constant = shouldShowNavigator ? 1 : 0
+        fileNavigatorContainer.isHidden = !shouldShowNavigator
+        fileNavigatorDivider.isHidden = !shouldShowNavigator
+        updateFileNavigatorSelection()
+    }
+
+    private func updateFileNavigatorSelection() {
+        isSynchronizingNavigatorSelection = true
+        defer { isSynchronizingNavigatorSelection = false }
+
+        guard let selectedSessionIndex, sessionItems.indices.contains(selectedSessionIndex) else {
+            fileNavigatorTable.deselectAll(nil)
+            return
+        }
+
+        fileNavigatorTable.selectRowIndexes(IndexSet(integer: selectedSessionIndex), byExtendingSelection: false)
+        fileNavigatorTable.scrollRowToVisible(selectedSessionIndex)
+    }
+
+    private func npyFiles(in directoryURL: URL) throws -> [URL] {
+        try FileManager.default
+            .contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            .filter { url in
+                isNPYFile(url) && !isDirectory(url)
+            }
+            .sorted { lhs, rhs in
+                lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent) == .orderedAscending
+            }
+    }
+
+    private func isNPYFile(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "npy"
+    }
+
+    private func isDirectory(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
     private func showError(_ error: Error, title: String) {

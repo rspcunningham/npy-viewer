@@ -15,8 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         pendingOpenURLs.removeAll()
 
-        for argument in CommandLine.arguments.dropFirst() where argument.lowercased().hasSuffix(".npy") {
-            controller.open(url: URL(fileURLWithPath: argument))
+        for argument in CommandLine.arguments.dropFirst() {
+            let url = URL(fileURLWithPath: argument)
+            if FileManager.default.fileExists(atPath: url.path) {
+                controller.open(url: url)
+            }
         }
 
         NSApp.setActivationPolicy(.regular)
