@@ -15,7 +15,13 @@ final class OverlayTextField: NSTextField {
         path.fill()
         NSGraphicsContext.restoreGraphicsState()
 
+        NSGraphicsContext.saveGraphicsState()
         let textRect = bounds.insetBy(dx: insets.left, dy: insets.top)
-        attributedStringValue.draw(in: textRect)
+        NSBezierPath(rect: textRect).addClip()
+        attributedStringValue.draw(
+            with: textRect,
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        NSGraphicsContext.restoreGraphicsState()
     }
 }

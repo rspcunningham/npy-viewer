@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           export APP_VERSION="${APP_VERSION#v}"
-          ./script/package_release.sh
+          ./scripts/package_release.sh
 
       - name: Create or update GitHub Release
         env:

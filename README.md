@@ -12,7 +12,7 @@ curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/insta
 ## Build
 
 ```bash
-./script/build_and_run.sh --build-only
+./scripts/build.sh
 ```
 
 The app bundle is staged at:

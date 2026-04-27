@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let metalView = ImageMetalView(frame: .zero, device: nil)
     private let overlay = OverlayTextField(labelWithString: "")
+    private let overlayPreferredWidth: CGFloat = 720
     private let fileLoadQueue = DispatchQueue(label: "com.parasight.NPYViewer.file-load", qos: .userInitiated)
     private var renderer: MetalRenderer?
     private var currentURL: URL?
@@ -15,6 +16,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let overlayAttributes: [NSAttributedString.Key: Any] = {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 3
+        paragraph.lineBreakMode = .byClipping
         return [
             .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
             .foregroundColor: NSColor.white,
@@ -41,8 +43,11 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         overlay.textColor = .white
         overlay.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         overlay.maximumNumberOfLines = 6
-        overlay.lineBreakMode = .byTruncatingTail
+        overlay.lineBreakMode = .byClipping
         view.addSubview(overlay)
+
+        let overlayWidth = overlay.widthAnchor.constraint(equalToConstant: overlayPreferredWidth)
+        overlayWidth.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
             metalView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -52,6 +57,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
             overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             overlay.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            overlayWidth,
             overlay.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -24)
         ])
     }
@@ -119,7 +125,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
             return
         }
 
-        setHoverText("x \(coordinate.x)  y \(coordinate.y)  \(value.displayString)")
+        setHoverText(formatHoverText(array: array, coordinate: coordinate, value: value))
     }
 
     func imageMetalViewDidEndHover(_ view: ImageMetalView) {
@@ -167,8 +173,36 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         let shape = "\(array.height)x\(array.width)"
         let dtype = array.elementType.dtypeName
         let mode = renderer?.displayMode.label ?? "scalar"
-        let hover = hoverText ?? "x -  y -"
+        let hover = hoverText ?? placeholderHoverText(for: array)
         setOverlayText("\(file)\nshape \(shape)  dtype \(dtype)  mode \(mode)\n\(hover)")
+    }
+
+    private func formatHoverText(
+        array: NPYArray,
+        coordinate: (x: Int, y: Int),
+        value: NPYPixelValue
+    ) -> String {
+        let x = fixedWidth(coordinate.x, width: indexWidth(for: array.width))
+        let y = fixedWidth(coordinate.y, width: indexWidth(for: array.height))
+        return "x \(x)  y \(y)  \(value.overlayDisplayString)"
+    }
+
+    private func placeholderHoverText(for array: NPYArray) -> String {
+        let x = String(repeating: "-", count: indexWidth(for: array.width))
+        let y = String(repeating: "-", count: indexWidth(for: array.height))
+        return "x \(x)  y \(y)"
+    }
+
+    private func indexWidth(for count: Int) -> Int {
+        String(max(count - 1, 0)).count
+    }
+
+    private func fixedWidth(_ value: Int, width: Int) -> String {
+        let text = String(value)
+        guard text.count < width else {
+            return text
+        }
+        return String(repeating: " ", count: width - text.count) + text
     }
 
     private func setOverlayText(_ text: String) {
@@ -218,5 +252,22 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         alert.alertStyle = .warning
         alert.runModal()
+    }
+}
+
+private extension NPYPixelValue {
+    var overlayDisplayString: String {
+        switch self {
+        case .scalar(let value):
+            return Self.format(value)
+        case .complex(let real, let imag):
+            let magnitude = hypotf(real, imag)
+            let phase = atan2f(imag, real)
+            return "real \(Self.format(real))  imag \(Self.format(imag))  abs \(Self.format(magnitude))  phase \(Self.format(phase))"
+        }
+    }
+
+    static func format(_ value: Float) -> String {
+        String(format: "% .7f", Double(value))
     }
 }

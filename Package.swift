@@ -12,14 +12,19 @@ let package = Package(
         .executable(name: "NPYViewer", targets: ["NPYViewer"])
     ],
     targets: [
-        .target(name: "NPYCore"),
+        .target(
+            name: "NPYCore",
+            path: "sources/NPYCore"
+        ),
         .executableTarget(
             name: "NPYViewer",
-            dependencies: ["NPYCore"]
+            dependencies: ["NPYCore"],
+            path: "sources/NPYViewer"
         ),
         .testTarget(
             name: "NPYCoreTests",
-            dependencies: ["NPYCore"]
+            dependencies: ["NPYCore"],
+            path: "tests/NPYCoreTests"
         )
     ],
     swiftLanguageModes: [.v5]

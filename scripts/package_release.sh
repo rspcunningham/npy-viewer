@@ -64,7 +64,7 @@ EOF
 cd "$ROOT_DIR"
 mkdir -p "$RELEASE_DIR"
 
-APP_BUNDLE="$(SIGNING_MODE=developer-id "$ROOT_DIR/script/stage_app.sh")"
+APP_BUNDLE="$(SIGNING_MODE=developer-id "$ROOT_DIR/scripts/stage_app.sh")"
 
 codesign --verify --strict --verbose=2 "$APP_BUNDLE"
 codesign --verify --strict --verbose=2 "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
