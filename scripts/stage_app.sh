@@ -13,6 +13,7 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
+APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 
@@ -63,7 +64,7 @@ write_info_plist() {
         <string>npy</string>
       </array>
       <key>CFBundleTypeIconFile</key>
-      <string></string>
+      <string>AppIcon</string>
       <key>CFBundleTypeName</key>
       <string>NumPy Array</string>
       <key>CFBundleTypeRole</key>
@@ -82,6 +83,8 @@ write_info_plist() {
   <string>$BUNDLE_ID</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
   <key>CFBundlePackageType</key>
@@ -155,8 +158,9 @@ swift build -c release --product "$APP_NAME" >&2
 BUILD_BINARY="$(swift build -c release --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS"
+mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
+cp "$ROOT_DIR/resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
 chmod +x "$APP_BINARY"
 write_info_plist
 sign_app "$(resolve_signing_identity)"
