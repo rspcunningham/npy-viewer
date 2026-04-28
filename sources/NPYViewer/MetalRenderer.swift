@@ -1,14 +1,24 @@
 import AppKit
+import ImageIO
 import Metal
 import MetalKit
 import NPYCore
+import UniformTypeIdentifiers
 
 enum RendererError: LocalizedError {
     case noMetalDevice
     case noCommandQueue
+    case noCommandBuffer
+    case noCommandEncoder
+    case noBuffer
+    case noArray
     case noTexture
     case textureTooLarge(width: Int, height: Int, max: Int)
     case shaderCompile(String)
+    case commandFailed(String)
+    case pngImageCreateFailed
+    case pngDestinationCreateFailed(URL)
+    case pngWriteFailed(URL)
 
     var errorDescription: String? {
         switch self {
@@ -16,12 +26,28 @@ enum RendererError: LocalizedError {
             "Metal is not available on this Mac."
         case .noCommandQueue:
             "Could not create a Metal command queue."
+        case .noCommandBuffer:
+            "Could not create a Metal command buffer."
+        case .noCommandEncoder:
+            "Could not create a Metal render encoder."
+        case .noBuffer:
+            "Could not create a Metal readback buffer."
+        case .noArray:
+            "No image is loaded."
         case .noTexture:
             "Could not create a Metal texture for this array."
         case .textureTooLarge(let width, let height, let max):
             "Texture \(width)x\(height) exceeds the current v0.0 limit of \(max)x\(max)."
         case .shaderCompile(let message):
             "Could not compile Metal shaders: \(message)"
+        case .commandFailed(let message):
+            "Metal export failed: \(message)"
+        case .pngImageCreateFailed:
+            "Could not create an image from the rendered pixels."
+        case .pngDestinationCreateFailed(let url):
+            "Could not create a PNG file at \(url.path)."
+        case .pngWriteFailed(let url):
+            "Could not write PNG file at \(url.path)."
         }
     }
 }
@@ -30,6 +56,16 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     struct ViewportState {
         let normalizedCenter: CGPoint
         let zoom: CGFloat
+    }
+
+    struct PNGExportSnapshot {
+        fileprivate let texture: MTLTexture
+        fileprivate let width: Int
+        fileprivate let height: Int
+        fileprivate let displayMode: DisplayMode
+        fileprivate let colorMap: ColorMap
+        fileprivate let window: Float
+        fileprivate let level: Float
     }
 
     private struct Vertex {
@@ -291,6 +327,67 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         setWindowLevel(window: 1, level: 0.5)
     }
 
+    func makePNGExportSnapshot() throws -> PNGExportSnapshot {
+        guard let array, let texture else {
+            throw RendererError.noArray
+        }
+
+        return PNGExportSnapshot(
+            texture: texture,
+            width: array.width,
+            height: array.height,
+            displayMode: displayMode,
+            colorMap: colorMap,
+            window: window,
+            level: level
+        )
+    }
+
+    func writePNG(from snapshot: PNGExportSnapshot, to url: URL) throws {
+        let bytesPerPixel = 4
+        let minimumBytesPerRow = snapshot.width * bytesPerPixel
+        let bytesPerRow = aligned(minimumBytesPerRow, to: 256)
+        let pixelData = try renderExportPixels(from: snapshot, bytesPerRow: bytesPerRow)
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let provider = CGDataProvider(data: pixelData as CFData) else {
+            throw RendererError.pngImageCreateFailed
+        }
+
+        let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(
+            CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+        )
+        guard let image = CGImage(
+            width: snapshot.width,
+            height: snapshot.height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: bitmapInfo,
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ) else {
+            throw RendererError.pngImageCreateFailed
+        }
+
+        guard let destination = CGImageDestinationCreateWithURL(
+            url as CFURL,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else {
+            throw RendererError.pngDestinationCreateFailed(url)
+        }
+
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw RendererError.pngWriteFailed(url)
+        }
+    }
+
     func requestDraw() {
         view?.needsDisplay = true
     }
@@ -337,6 +434,81 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         commandBuffer.commit()
     }
 
+    private func renderExportPixels(from snapshot: PNGExportSnapshot, bytesPerRow: Int) throws -> Data {
+        let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm,
+            width: snapshot.width,
+            height: snapshot.height,
+            mipmapped: false
+        )
+        textureDescriptor.storageMode = .private
+        textureDescriptor.usage = [.renderTarget]
+
+        guard let outputTexture = device.makeTexture(descriptor: textureDescriptor) else {
+            throw RendererError.noTexture
+        }
+        let bufferLength = bytesPerRow * snapshot.height
+        guard let readbackBuffer = device.makeBuffer(length: bufferLength, options: .storageModeShared) else {
+            throw RendererError.noBuffer
+        }
+
+        let renderPassDescriptor = MTLRenderPassDescriptor()
+        renderPassDescriptor.colorAttachments[0].texture = outputTexture
+        renderPassDescriptor.colorAttachments[0].loadAction = .clear
+        renderPassDescriptor.colorAttachments[0].storeAction = .store
+        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            throw RendererError.noCommandBuffer
+        }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+            throw RendererError.noCommandEncoder
+        }
+
+        encoder.setRenderPipelineState(pipelineState)
+        let vertices = fullImageVertices()
+        vertices.withUnsafeBytes { bytes in
+            if let baseAddress = bytes.baseAddress {
+                encoder.setVertexBytes(baseAddress, length: bytes.count, index: 0)
+            }
+        }
+
+        var mode = snapshot.displayMode.rawValue
+        var colorMapRaw = snapshot.colorMap.rawValue
+        var windowLevel = SIMD2<Float>(snapshot.window, snapshot.level)
+        encoder.setFragmentBytes(&mode, length: MemoryLayout<UInt32>.size, index: 0)
+        encoder.setFragmentBytes(&colorMapRaw, length: MemoryLayout<UInt32>.size, index: 1)
+        encoder.setFragmentBytes(&windowLevel, length: MemoryLayout<SIMD2<Float>>.size, index: 2)
+        encoder.setFragmentTexture(snapshot.texture, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: vertices.count)
+        encoder.endEncoding()
+
+        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            throw RendererError.noCommandEncoder
+        }
+        blitEncoder.copy(
+            from: outputTexture,
+            sourceSlice: 0,
+            sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: snapshot.width, height: snapshot.height, depth: 1),
+            to: readbackBuffer,
+            destinationOffset: 0,
+            destinationBytesPerRow: bytesPerRow,
+            destinationBytesPerImage: bufferLength
+        )
+        blitEncoder.endEncoding()
+
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        if let error = commandBuffer.error {
+            throw RendererError.commandFailed(error.localizedDescription)
+        }
+
+        return Data(bytes: readbackBuffer.contents(), count: bufferLength)
+    }
+
     private func quadVertices(for array: NPYArray, in viewSize: CGSize) -> [Vertex] {
         guard viewSize.width > 0, viewSize.height > 0 else {
             return []
@@ -359,6 +531,15 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             Vertex(position: ndc(x: left, y: bottom), texCoord: SIMD2<Float>(0, 1)),
             Vertex(position: ndc(x: right, y: top), texCoord: SIMD2<Float>(1, 0)),
             Vertex(position: ndc(x: right, y: bottom), texCoord: SIMD2<Float>(1, 1))
+        ]
+    }
+
+    private func fullImageVertices() -> [Vertex] {
+        [
+            Vertex(position: SIMD2<Float>(-1, 1), texCoord: SIMD2<Float>(0, 0)),
+            Vertex(position: SIMD2<Float>(-1, -1), texCoord: SIMD2<Float>(0, 1)),
+            Vertex(position: SIMD2<Float>(1, 1), texCoord: SIMD2<Float>(1, 0)),
+            Vertex(position: SIMD2<Float>(1, -1), texCoord: SIMD2<Float>(1, 1))
         ]
     }
 
@@ -406,6 +587,10 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
     private func clamp(_ value: CGFloat, min lowerBound: CGFloat, max upperBound: CGFloat) -> CGFloat {
         min(max(value, lowerBound), upperBound)
+    }
+
+    private func aligned(_ value: Int, to alignment: Int) -> Int {
+        ((value + alignment - 1) / alignment) * alignment
     }
 }
 

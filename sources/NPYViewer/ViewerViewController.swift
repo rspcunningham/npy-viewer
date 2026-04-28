@@ -51,6 +51,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private let windowValueLabel = NSTextField(labelWithString: "1.00")
     private let levelValueLabel = NSTextField(labelWithString: "0.50")
     private let resetWindowLevelButton = NSButton(title: "Reset W/L", target: nil, action: nil)
+    private let exportPNGButton = NSButton(title: "Export PNG...", target: nil, action: nil)
     private let homeButton = NSButton(frame: .zero)
     private let preserveViewportButton = NSButton(checkboxWithTitle: "Preserve View", target: nil, action: nil)
     private let fileLabel = NSTextField(labelWithString: "No file")
@@ -60,6 +61,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private let fileNavigatorWidth: CGFloat = 240
     private let sidebarWidth: CGFloat = 248
     private let fileLoadQueue = DispatchQueue(label: "com.parasight.NPYViewer.file-load", qos: .userInitiated)
+    private let pngExportQueue = DispatchQueue(label: "com.parasight.NPYViewer.png-export", qos: .userInitiated)
     private var renderer: MetalRenderer?
     private var sessionDirectoryURL: URL?
     private var sessionItems: [ViewerItem] = []
@@ -71,6 +73,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private var fileNavigatorWidthConstraint: NSLayoutConstraint?
     private var fileNavigatorDividerWidthConstraint: NSLayoutConstraint?
     private var isSynchronizingNavigatorSelection = false
+    private var isExportingPNG = false
 
     var onTitleChanged: ((String) -> Void)?
 
@@ -221,6 +224,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         let shouldPreserveViewport = shouldPreserveViewport(forSelectionAt: index)
         saveCurrentWindowLevelState()
         selectedSessionIndex = index
+        displayedURL = nil
         hoverText = nil
         updateFileNavigatorSelection()
 
@@ -231,6 +235,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         shapeLabel.stringValue = "shape -"
         dtypeLabel.stringValue = "dtype -"
         cursorLabel.stringValue = "x -  y -"
+        updateExportControls()
 
         fileLoadQueue.async { [weak self] in
             let result = Result {
@@ -368,6 +373,46 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         resetZoom()
     }
 
+    @objc private func exportPNGButtonPressed(_ sender: NSButton) {
+        guard let renderer, let sourceURL = displayedURL else {
+            return
+        }
+
+        let snapshot: MetalRenderer.PNGExportSnapshot
+        do {
+            snapshot = try renderer.makePNGExportSnapshot()
+        } catch {
+            showError(error, title: "Could Not Export PNG")
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.canCreateDirectories = true
+        panel.directoryURL = sourceURL.deletingLastPathComponent()
+        panel.nameFieldStringValue = sourceURL.deletingPathExtension().lastPathComponent + ".png"
+        panel.prompt = "Export"
+        panel.title = "Export PNG"
+
+        guard panel.runModal() == .OK, let destinationURL = panel.url else {
+            return
+        }
+
+        setPNGExportInProgress(true)
+        pngExportQueue.async { [weak self, renderer] in
+            let result = Result {
+                try renderer.writePNG(from: snapshot, to: destinationURL)
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                self?.setPNGExportInProgress(false)
+                if case .failure(let error) = result {
+                    self?.showError(error, title: "Could Not Export PNG")
+                }
+            }
+        }
+    }
+
     @objc private func emptyStateOpenButtonPressed(_ sender: NSButton) {
         openDocument()
     }
@@ -386,6 +431,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         configurePopUps()
         configureWindowLevelControls()
         configureViewControls()
+        configureExportControls()
         configureMetadataLabels()
 
         let stack = NSStackView()
@@ -398,6 +444,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         stack.addArrangedSubview(makeControlGroup(title: "Mode", control: modePopUp))
         stack.addArrangedSubview(makeControlGroup(title: "Colormap", control: colorMapPopUp))
         stack.addArrangedSubview(makeWindowLevelGroup())
+        stack.addArrangedSubview(makeExportGroup())
         stack.addArrangedSubview(makeViewGroup())
         stack.addArrangedSubview(makeSpacer(height: 10))
         stack.addArrangedSubview(fileLabel)
@@ -581,6 +628,17 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         homeButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
     }
 
+    private func configureExportControls() {
+        exportPNGButton.target = self
+        exportPNGButton.action = #selector(exportPNGButtonPressed(_:))
+        exportPNGButton.bezelStyle = .rounded
+        exportPNGButton.controlSize = .regular
+        exportPNGButton.font = .systemFont(ofSize: 13)
+        exportPNGButton.toolTip = "Export the selected image as a PNG using the current mode, colormap, window, and level"
+        exportPNGButton.translatesAutoresizingMaskIntoConstraints = false
+        exportPNGButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
+    }
+
     private func configureMetadataLabels() {
         for label in [fileLabel, shapeLabel, dtypeLabel, cursorLabel] {
             label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -647,6 +705,26 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         return group
     }
 
+    private func makeExportGroup() -> NSView {
+        let titleLabel = makeSectionTitleLabel("Export")
+
+        let group = NSStackView(views: [
+            titleLabel,
+            exportPNGButton
+        ])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 6
+        group.distribution = .fill
+
+        NSLayoutConstraint.activate([
+            titleLabel.widthAnchor.constraint(equalTo: group.widthAnchor),
+            exportPNGButton.widthAnchor.constraint(equalTo: group.widthAnchor)
+        ])
+
+        return group
+    }
+
     private func makeViewGroup() -> NSView {
         let titleLabel = makeSectionTitleLabel("View")
 
@@ -705,6 +783,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         updateModePopUp()
         updateColorMapPopUp()
         updateWindowLevelControls()
+        updateExportControls()
 
         guard let array = renderer?.array else {
             emptyStateView.isHidden = false
@@ -770,6 +849,11 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         resetWindowLevelButton.isEnabled = hasImage
     }
 
+    private func updateExportControls() {
+        exportPNGButton.isEnabled = renderer?.array != nil && displayedURL != nil && !isExportingPNG
+        exportPNGButton.title = isExportingPNG ? "Exporting..." : "Export PNG..."
+    }
+
     private func updateCursorText() {
         guard let array = renderer?.array else {
             cursorLabel.stringValue = "x -  y -"
@@ -829,6 +913,11 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
         hoverText = text
         updateCursorText()
+    }
+
+    private func setPNGExportInProgress(_ isExporting: Bool) {
+        isExportingPNG = isExporting
+        updateExportControls()
     }
 
     private func finishOpen(array: NPYArray, url: URL, preservingViewport: Bool) {
