@@ -1,12 +1,10 @@
-import Foundation
-
-enum ColorMap: UInt32, CaseIterable {
+public enum ColorMap: UInt32, CaseIterable, Sendable {
     case gray = 0
     case viridis = 1
     case magma = 2
     case hot = 3
 
-    var label: String {
+    public var label: String {
         switch self {
         case .gray:
             "Gray"

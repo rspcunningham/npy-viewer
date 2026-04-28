@@ -1,5 +1,6 @@
 import AppKit
 import MetalKit
+import NPYViewerSupport
 
 protocol ImageMetalViewDelegate: AnyObject {
     func imageMetalView(_ view: ImageMetalView, didRequestOpen url: URL)
@@ -129,14 +130,10 @@ final class ImageMetalView: MTKView {
             return nil
         }
 
-        if url.pathExtension.lowercased() == "npy" || isDirectory(url) {
+        if NPYFileDiscovery.isNPYFile(url) || NPYFileDiscovery.isDirectory(url) {
             return url
         }
 
         return nil
-    }
-
-    private func isDirectory(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }

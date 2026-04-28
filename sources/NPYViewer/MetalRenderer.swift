@@ -3,6 +3,7 @@ import ImageIO
 import Metal
 import MetalKit
 import NPYCore
+import NPYViewerSupport
 import UniformTypeIdentifiers
 
 enum RendererError: LocalizedError {
@@ -128,7 +129,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     func setArray(
         _ array: NPYArray,
         preserving viewportState: ViewportState? = nil,
-        windowLevel: (window: Float, level: Float)? = nil
+        windowLevel: (window: Float, level: Float)? = nil,
+        displayMode restoredDisplayMode: DisplayMode? = nil
     ) throws {
         if array.width > maxTextureDimension || array.height > maxTextureDimension {
             throw RendererError.textureTooLarge(width: array.width, height: array.height, max: maxTextureDimension)
@@ -158,7 +160,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
         self.array = array
         self.texture = texture
-        self.displayMode = array.elementType == .complex64 ? .complexAbs : .scalar
+        if array.elementType == .complex64, let restoredDisplayMode, restoredDisplayMode != .scalar {
+            self.displayMode = restoredDisplayMode
+        } else {
+            self.displayMode = array.elementType == .complex64 ? .complexAbs : .scalar
+        }
         if let windowLevel {
             setWindowLevel(window: windowLevel.window, level: windowLevel.level)
         } else {

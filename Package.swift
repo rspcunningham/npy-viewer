@@ -16,15 +16,35 @@ let package = Package(
             name: "NPYCore",
             path: "sources/NPYCore"
         ),
+        .target(
+            name: "NPYViewerSupport",
+            dependencies: ["NPYCore"],
+            path: "sources/NPYViewerSupport"
+        ),
+        .target(
+            name: "NPYViewerApp",
+            dependencies: ["NPYCore", "NPYViewerSupport"],
+            path: "sources/NPYViewer"
+        ),
         .executableTarget(
             name: "NPYViewer",
-            dependencies: ["NPYCore"],
-            path: "sources/NPYViewer"
+            dependencies: ["NPYViewerApp"],
+            path: "sources/NPYViewerExecutable"
         ),
         .testTarget(
             name: "NPYCoreTests",
             dependencies: ["NPYCore"],
             path: "tests/NPYCoreTests"
+        ),
+        .testTarget(
+            name: "NPYViewerSupportTests",
+            dependencies: ["NPYCore", "NPYViewerSupport"],
+            path: "tests/NPYViewerSupportTests"
+        ),
+        .testTarget(
+            name: "NPYViewerAppTests",
+            dependencies: ["NPYCore", "NPYViewerApp", "NPYViewerSupport"],
+            path: "tests/NPYViewerAppTests"
         )
     ],
     swiftLanguageModes: [.v5]

@@ -1,6 +1,4 @@
-import Foundation
-
-enum DisplayMode: UInt32, CaseIterable {
+public enum DisplayMode: UInt32, CaseIterable, Sendable {
     case scalar = 0
     case complexAbs = 1
     case complexPhase = 2
@@ -8,7 +6,7 @@ enum DisplayMode: UInt32, CaseIterable {
     case complexImag = 4
     case complexIntensity = 5
 
-    var label: String {
+    public var label: String {
         switch self {
         case .scalar:
             "scalar"
@@ -25,7 +23,7 @@ enum DisplayMode: UInt32, CaseIterable {
         }
     }
 
-    var menuLabel: String {
+    public var menuLabel: String {
         switch self {
         case .scalar:
             "Scalar"

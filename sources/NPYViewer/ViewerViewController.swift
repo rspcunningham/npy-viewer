@@ -1,6 +1,7 @@
 import AppKit
 import MetalKit
 import NPYCore
+import NPYViewerSupport
 import UniformTypeIdentifiers
 
 final class CanvasEmptyStateView: NSView {
@@ -68,6 +69,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private let fileNavigatorDivider = NSView()
     private let modePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
     private let colorMapPopUp = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let colorMapScaleView = ColorMapScaleView(frame: .zero)
     private let windowSlider = NSSlider(value: 1, minValue: 0.01, maxValue: 1, target: nil, action: nil)
     private let levelSlider = NSSlider(value: 0.5, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let windowValueLabel = NSTextField(labelWithString: "1.00")
@@ -90,6 +92,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private var selectedSessionIndex: Int?
     private var displayedURL: URL?
     private var windowLevelByURL: [URL: WindowLevelState] = [:]
+    private var displayModeByURL: [URL: DisplayMode] = [:]
     private var hoverText: String?
     private var openRequestID = 0
     private var fileNavigatorWidthConstraint: NSLayoutConstraint?
@@ -215,12 +218,12 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     }
 
     func open(url: URL) {
-        if isDirectory(url) {
+        if NPYFileDiscovery.isDirectory(url) {
             openDirectory(url)
             return
         }
 
-        guard isNPYFile(url) else {
+        guard NPYFileDiscovery.isNPYFile(url) else {
             showError(ViewerOpenError.unsupportedFile(url), title: "Could Not Open \(url.lastPathComponent)")
             return
         }
@@ -230,7 +233,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
     private func openDirectory(_ url: URL) {
         do {
-            let urls = try npyFiles(in: url)
+            let urls = try NPYFileDiscovery.npyFiles(in: url)
             guard !urls.isEmpty else {
                 showError(ViewerOpenError.noNPYFiles(url), title: "Could Not Open \(url.lastPathComponent)")
                 return
@@ -248,6 +251,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         selectedSessionIndex = nil
         displayedURL = nil
         windowLevelByURL = [:]
+        displayModeByURL = [:]
         updateFileNavigator()
         selectSessionItem(at: selectedIndex)
     }
@@ -261,6 +265,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         let requestID = openRequestID
         let shouldPreserveViewport = shouldPreserveViewport(forSelectionAt: index)
         saveCurrentWindowLevelState()
+        saveCurrentDisplayModeState()
         selectedSessionIndex = index
         displayedURL = nil
         hoverText = nil
@@ -321,7 +326,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
             return
         }
 
-        setHoverText(formatHoverText(array: array, coordinate: coordinate, value: value))
+        setHoverText(ViewerFormatting.hoverText(array: array, coordinate: coordinate, value: value))
     }
 
     func imageMetalViewDidEndHover(_ view: ImageMetalView) {
@@ -381,6 +386,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         }
 
         renderer?.setDisplayMode(mode)
+        saveCurrentDisplayModeState()
         updateInspector()
     }
 
@@ -400,6 +406,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         )
         saveCurrentWindowLevelState()
         updateWindowLevelControls()
+        updateColorMapScaleView()
     }
 
     @objc private func resetWindowLevelButtonPressed(_ sender: NSButton) {
@@ -558,7 +565,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         sidebar.addSubview(stack)
 
         stack.addArrangedSubview(makeControlGroup(title: "Mode", control: modePopUp))
-        stack.addArrangedSubview(makeControlGroup(title: "Colormap", control: colorMapPopUp))
+        stack.addArrangedSubview(makeColorMapGroup())
         stack.addArrangedSubview(makeWindowLevelGroup())
         stack.addArrangedSubview(makeExportGroup())
         stack.addArrangedSubview(makeViewGroup())
@@ -696,6 +703,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
             colorMapPopUp.addItem(withTitle: colorMap.label)
             colorMapPopUp.lastItem?.tag = Int(colorMap.rawValue)
         }
+
+        colorMapScaleView.translatesAutoresizingMaskIntoConstraints = false
     }
 
     private func configureWindowLevelControls() {
@@ -787,6 +796,29 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         NSLayoutConstraint.activate([
             titleLabel.widthAnchor.constraint(equalTo: group.widthAnchor),
             control.widthAnchor.constraint(equalTo: group.widthAnchor)
+        ])
+
+        return group
+    }
+
+    private func makeColorMapGroup() -> NSView {
+        let titleLabel = makeSectionTitleLabel("Colormap")
+
+        colorMapPopUp.translatesAutoresizingMaskIntoConstraints = false
+        colorMapPopUp.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        colorMapPopUp.heightAnchor.constraint(equalToConstant: 28).isActive = true
+        colorMapScaleView.heightAnchor.constraint(equalToConstant: ColorMapScaleView.preferredHeight).isActive = true
+
+        let group = NSStackView(views: [titleLabel, colorMapPopUp, colorMapScaleView])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 5
+        group.distribution = .fill
+
+        NSLayoutConstraint.activate([
+            titleLabel.widthAnchor.constraint(equalTo: group.widthAnchor),
+            colorMapPopUp.widthAnchor.constraint(equalTo: group.widthAnchor),
+            colorMapScaleView.widthAnchor.constraint(equalTo: group.widthAnchor)
         ])
 
         return group
@@ -900,6 +932,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         updateModePopUp()
         updateColorMapPopUp()
         updateWindowLevelControls()
+        updateColorMapScaleView()
         updateExportControls()
 
         guard let array = renderer?.array else {
@@ -951,6 +984,16 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         colorMapPopUp.isEnabled = renderer?.array != nil
     }
 
+    private func updateColorMapScaleView() {
+        colorMapScaleView.setState(
+            colorMap: renderer?.colorMap ?? .gray,
+            displayMode: renderer?.displayMode ?? .scalar,
+            window: renderer?.window ?? 1,
+            level: renderer?.level ?? 0.5,
+            isScaleEnabled: renderer?.array != nil
+        )
+    }
+
     private func updateWindowLevelControls() {
         let hasImage = renderer?.array != nil
         let window = renderer?.window ?? 1
@@ -958,8 +1001,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
         windowSlider.doubleValue = Double(window)
         levelSlider.doubleValue = Double(level)
-        windowValueLabel.stringValue = formatControlValue(window)
-        levelValueLabel.stringValue = formatControlValue(level)
+        windowValueLabel.stringValue = ViewerFormatting.controlValue(window)
+        levelValueLabel.stringValue = ViewerFormatting.controlValue(level)
 
         windowSlider.isEnabled = hasImage
         levelSlider.isEnabled = hasImage
@@ -977,7 +1020,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
             return
         }
 
-        cursorLabel.stringValue = hoverText ?? placeholderHoverText(for: array)
+        cursorLabel.stringValue = hoverText ?? ViewerFormatting.placeholderHoverText(for: array)
     }
 
     private func refreshHoverFromCurrentMouseLocation() {
@@ -987,49 +1030,6 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         }
 
         imageMetalView(metalView, didHoverAt: point)
-    }
-
-    private func formatHoverText(
-        array: NPYArray,
-        coordinate: (x: Int, y: Int),
-        value: NPYPixelValue
-    ) -> String {
-        let x = fixedWidth(coordinate.x, width: indexWidth(for: array.width))
-        let y = fixedWidth(coordinate.y, width: indexWidth(for: array.height))
-        return """
-        \(paddedField("x")) \(x)
-        \(paddedField("y")) \(y)
-        \(value.sidebarDisplayString)
-        """
-    }
-
-    private func placeholderHoverText(for array: NPYArray) -> String {
-        let x = String(repeating: "-", count: indexWidth(for: array.width))
-        let y = String(repeating: "-", count: indexWidth(for: array.height))
-        return """
-        \(paddedField("x")) \(x)
-        \(paddedField("y")) \(y)
-        """
-    }
-
-    private func indexWidth(for count: Int) -> Int {
-        String(max(count - 1, 0)).count
-    }
-
-    private func fixedWidth(_ value: Int, width: Int) -> String {
-        let text = String(value)
-        guard text.count < width else {
-            return text
-        }
-        return String(repeating: " ", count: width - text.count) + text
-    }
-
-    private func paddedField(_ field: String) -> String {
-        field.padding(toLength: Self.hoverFieldWidth, withPad: " ", startingAt: 0)
-    }
-
-    private func formatControlValue(_ value: Float) -> String {
-        String(format: "%.2f", Double(value))
     }
 
     private func setHoverText(_ text: String?) {
@@ -1050,13 +1050,15 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         let previousHoverText = hoverText
         let viewportState = preservingViewport && preserveViewportButton.state == .on ? renderer?.viewportState() : nil
         let windowLevelState = windowLevelByURL[url]
+        let displayModeState = displayModeByURL[url]
         hoverText = nil
 
         do {
             try renderer?.setArray(
                 array,
                 preserving: viewportState,
-                windowLevel: windowLevelState.map { (window: $0.window, level: $0.level) }
+                windowLevel: windowLevelState.map { (window: $0.window, level: $0.level) },
+                displayMode: displayModeState
             )
             displayedURL = url
             onTitleChanged?(title(for: url))
@@ -1085,6 +1087,14 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         }
 
         windowLevelByURL[url] = WindowLevelState(window: renderer.window, level: renderer.level)
+    }
+
+    private func saveCurrentDisplayModeState() {
+        guard let url = displayedURL, let renderer, renderer.array != nil else {
+            return
+        }
+
+        displayModeByURL[url] = renderer.displayMode
     }
 
     private var selectedURL: URL? {
@@ -1126,29 +1136,6 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         fileNavigatorTable.scrollRowToVisible(selectedSessionIndex)
     }
 
-    private func npyFiles(in directoryURL: URL) throws -> [URL] {
-        try FileManager.default
-            .contentsOfDirectory(
-                at: directoryURL,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
-            .filter { url in
-                isNPYFile(url) && !isDirectory(url)
-            }
-            .sorted { lhs, rhs in
-                lhs.lastPathComponent.localizedStandardCompare(rhs.lastPathComponent) == .orderedAscending
-            }
-    }
-
-    private func isNPYFile(_ url: URL) -> Bool {
-        url.pathExtension.lowercased() == "npy"
-    }
-
-    private func isDirectory(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-    }
-
     private func showError(_ error: Error, title: String) {
         let alert = NSAlert()
         alert.messageText = title
@@ -1159,33 +1146,4 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
     private static let upArrowKeyCode: UInt16 = 126
     private static let downArrowKeyCode: UInt16 = 125
-    static let hoverFieldWidth = 9
-}
-
-private extension NPYPixelValue {
-    var sidebarDisplayString: String {
-        switch self {
-        case .scalar(let value):
-            return "\(Self.paddedField("value")) \(Self.format(value))"
-        case .complex(let real, let imag):
-            let magnitude = hypotf(real, imag)
-            let intensity = real * real + imag * imag
-            let phase = atan2f(imag, real)
-            return """
-            \(Self.paddedField("real")) \(Self.format(real))
-            \(Self.paddedField("imag")) \(Self.format(imag))
-            \(Self.paddedField("abs")) \(Self.format(magnitude))
-            \(Self.paddedField("intensity")) \(Self.format(intensity))
-            \(Self.paddedField("phase")) \(Self.format(phase))
-            """
-        }
-    }
-
-    static func format(_ value: Float) -> String {
-        String(format: "% .7f", Double(value))
-    }
-
-    static func paddedField(_ field: String) -> String {
-        field.padding(toLength: ViewerViewController.hoverFieldWidth, withPad: " ", startingAt: 0)
-    }
 }
