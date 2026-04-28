@@ -10,6 +10,28 @@ final class CanvasEmptyStateView: NSView {
     }
 }
 
+final class FileNavigatorTableView: NSTableView {
+    weak var fallbackFirstResponder: NSResponder?
+
+    override func mouseDown(with event: NSEvent) {
+        let previousFirstResponder = window?.firstResponder
+        super.mouseDown(with: event)
+        restoreFirstResponder(previousFirstResponder)
+    }
+
+    private func restoreFirstResponder(_ previousFirstResponder: NSResponder?) {
+        guard window?.firstResponder === self else {
+            return
+        }
+
+        if let previousFirstResponder, previousFirstResponder !== self {
+            window?.makeFirstResponder(previousFirstResponder)
+        } else if let fallbackFirstResponder {
+            window?.makeFirstResponder(fallbackFirstResponder)
+        }
+    }
+}
+
 private enum ViewerOpenError: LocalizedError {
     case unsupportedFile(URL)
     case noNPYFiles(URL)
@@ -41,7 +63,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private let emptyStateLabel = NSTextField(labelWithString: ViewerViewController.emptyStatePrompt)
     private let emptyStateButton = NSButton(title: "Open File or Directory...", target: nil, action: nil)
     private let fileNavigatorContainer = NSView()
-    private let fileNavigatorTable = NSTableView()
+    private let fileNavigatorTable = FileNavigatorTableView()
     private let fileNavigatorScrollView = NSScrollView()
     private let fileNavigatorDivider = NSView()
     private let modePopUp = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -74,6 +96,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private var fileNavigatorDividerWidthConstraint: NSLayoutConstraint?
     private var isSynchronizingNavigatorSelection = false
     private var isExportingPNG = false
+    private var keyDownMonitor: Any?
 
     var onTitleChanged: ((String) -> Void)?
 
@@ -158,6 +181,21 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         }
 
         updateInspector()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        installKeyDownMonitor()
+
+        if view.window?.firstResponder == nil {
+            view.window?.makeFirstResponder(metalView)
+        }
+    }
+
+    deinit {
+        if let keyDownMonitor {
+            NSEvent.removeMonitor(keyDownMonitor)
+        }
     }
 
     func openDocument() {
@@ -265,6 +303,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         renderer?.resetView()
         renderer?.requestDraw()
         updateInspector()
+        refreshHoverFromCurrentMouseLocation()
     }
 
     func imageMetalView(_ view: ImageMetalView, didRequestOpen url: URL) {
@@ -417,6 +456,83 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         openDocument()
     }
 
+    private func installKeyDownMonitor() {
+        guard keyDownMonitor == nil else {
+            return
+        }
+
+        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard self?.handleKeyDown(event) == true else {
+                return event
+            }
+
+            return nil
+        }
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> Bool {
+        guard event.window === view.window else {
+            return false
+        }
+
+        let navigationOffset: Int
+        switch event.keyCode {
+        case Self.upArrowKeyCode:
+            navigationOffset = -1
+        case Self.downArrowKeyCode:
+            navigationOffset = 1
+        default:
+            return false
+        }
+
+        let ignoredModifiers: NSEvent.ModifierFlags = [.numericPad, .function, .capsLock]
+        let activeModifiers = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting(ignoredModifiers)
+        guard activeModifiers.isEmpty else {
+            return false
+        }
+
+        return navigateFileSelection(by: navigationOffset)
+    }
+
+    private func navigateFileSelection(by offset: Int) -> Bool {
+        guard sessionItems.count > 1 else {
+            return false
+        }
+
+        let previousFirstResponder = view.window?.firstResponder
+        defer {
+            restoreFirstResponderAfterFileNavigation(previousFirstResponder)
+        }
+
+        let currentIndex = selectedSessionIndex ?? fileNavigatorTable.selectedRow
+        guard currentIndex >= 0 else {
+            selectSessionItem(at: 0)
+            return true
+        }
+
+        let nextIndex = min(max(currentIndex + offset, 0), sessionItems.count - 1)
+        guard nextIndex != currentIndex else {
+            return true
+        }
+
+        selectSessionItem(at: nextIndex)
+        return true
+    }
+
+    private func restoreFirstResponderAfterFileNavigation(_ previousFirstResponder: NSResponder?) {
+        guard let window = view.window, window.firstResponder === fileNavigatorTable else {
+            return
+        }
+
+        if let previousFirstResponder, previousFirstResponder !== fileNavigatorTable {
+            window.makeFirstResponder(previousFirstResponder)
+        } else {
+            window.makeFirstResponder(metalView)
+        }
+    }
+
     private func makeSidebar() -> NSView {
         let sidebar = NSView()
         sidebar.wantsLayer = true
@@ -518,6 +634,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         fileNavigatorTable.selectionHighlightStyle = .regular
         fileNavigatorTable.backgroundColor = .clear
         fileNavigatorTable.enclosingScrollView?.drawsBackground = false
+        fileNavigatorTable.fallbackFirstResponder = metalView
         fileNavigatorTable.delegate = self
         fileNavigatorTable.dataSource = self
 
@@ -649,7 +766,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
         fileLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         fileLabel.textColor = NSColor(white: 0.92, alpha: 1)
-        cursorLabel.maximumNumberOfLines = 6
+        cursorLabel.maximumNumberOfLines = 7
         cursorLabel.lineBreakMode = .byWordWrapping
         cursorLabel.textColor = NSColor(white: 0.82, alpha: 1)
     }
@@ -863,6 +980,15 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         cursorLabel.stringValue = hoverText ?? placeholderHoverText(for: array)
     }
 
+    private func refreshHoverFromCurrentMouseLocation() {
+        guard let point = metalView.currentTopLeftMousePointIfInside() else {
+            setHoverText(nil)
+            return
+        }
+
+        imageMetalView(metalView, didHoverAt: point)
+    }
+
     private func formatHoverText(
         array: NPYArray,
         coordinate: (x: Int, y: Int),
@@ -899,7 +1025,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     }
 
     private func paddedField(_ field: String) -> String {
-        field.padding(toLength: 5, withPad: " ", startingAt: 0)
+        field.padding(toLength: Self.hoverFieldWidth, withPad: " ", startingAt: 0)
     }
 
     private func formatControlValue(_ value: Float) -> String {
@@ -935,6 +1061,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
             displayedURL = url
             onTitleChanged?(title(for: url))
             updateInspector()
+            refreshHoverFromCurrentMouseLocation()
         } catch {
             hoverText = previousHoverText
             renderer?.clearArray()
@@ -1029,6 +1156,10 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         alert.alertStyle = .warning
         alert.runModal()
     }
+
+    private static let upArrowKeyCode: UInt16 = 126
+    private static let downArrowKeyCode: UInt16 = 125
+    static let hoverFieldWidth = 9
 }
 
 private extension NPYPixelValue {
@@ -1038,11 +1169,13 @@ private extension NPYPixelValue {
             return "\(Self.paddedField("value")) \(Self.format(value))"
         case .complex(let real, let imag):
             let magnitude = hypotf(real, imag)
+            let intensity = real * real + imag * imag
             let phase = atan2f(imag, real)
             return """
             \(Self.paddedField("real")) \(Self.format(real))
             \(Self.paddedField("imag")) \(Self.format(imag))
             \(Self.paddedField("abs")) \(Self.format(magnitude))
+            \(Self.paddedField("intensity")) \(Self.format(intensity))
             \(Self.paddedField("phase")) \(Self.format(phase))
             """
         }
@@ -1053,6 +1186,6 @@ private extension NPYPixelValue {
     }
 
     static func paddedField(_ field: String) -> String {
-        field.padding(toLength: 5, withPad: " ", startingAt: 0)
+        field.padding(toLength: ViewerViewController.hoverFieldWidth, withPad: " ", startingAt: 0)
     }
 }

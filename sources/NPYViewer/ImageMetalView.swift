@@ -15,6 +15,10 @@ final class ImageMetalView: MTKView {
     private var trackingAreaRef: NSTrackingArea?
     private var lastDragPoint: CGPoint?
 
+    override var acceptsFirstResponder: Bool {
+        true
+    }
+
     override init(frame frameRect: NSRect, device: MTLDevice?) {
         super.init(frame: frameRect, device: device)
         commonInit()
@@ -23,6 +27,11 @@ final class ImageMetalView: MTKView {
     required init(coder: NSCoder) {
         super.init(coder: coder)
         commonInit()
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .crosshair)
     }
 
     override func updateTrackingAreas() {
@@ -48,6 +57,7 @@ final class ImageMetalView: MTKView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
         lastDragPoint = topLeftPoint(for: event)
     }
 
@@ -91,6 +101,19 @@ final class ImageMetalView: MTKView {
     private func commonInit() {
         wantsLayer = true
         registerForDraggedTypes([.fileURL])
+    }
+
+    func currentTopLeftMousePointIfInside() -> CGPoint? {
+        guard let window else {
+            return nil
+        }
+
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(point) else {
+            return nil
+        }
+
+        return CGPoint(x: point.x, y: bounds.height - point.y)
     }
 
     private func topLeftPoint(for event: NSEvent) -> CGPoint {
