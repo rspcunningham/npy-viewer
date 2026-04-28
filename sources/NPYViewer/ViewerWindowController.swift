@@ -11,7 +11,8 @@ final class ViewerWindowController: NSWindowController {
             defer: false
         )
         window.title = "NPYViewer"
-        window.minSize = NSSize(width: 560, height: 420)
+        window.contentMinSize = NSSize(width: 1100, height: 750)
+        window.isRestorable = false
         window.contentViewController = viewerViewController
 
         super.init(window: window)
