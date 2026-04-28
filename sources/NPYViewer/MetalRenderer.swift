@@ -27,6 +27,11 @@ enum RendererError: LocalizedError {
 }
 
 final class MetalRenderer: NSObject, MTKViewDelegate {
+    struct ViewportState {
+        let normalizedCenter: CGPoint
+        let zoom: CGFloat
+    }
+
     private struct Vertex {
         var position: SIMD2<Float>
         var texCoord: SIMD2<Float>
@@ -84,7 +89,11 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         view.delegate = self
     }
 
-    func setArray(_ array: NPYArray) throws {
+    func setArray(
+        _ array: NPYArray,
+        preserving viewportState: ViewportState? = nil,
+        windowLevel: (window: Float, level: Float)? = nil
+    ) throws {
         if array.width > maxTextureDimension || array.height > maxTextureDimension {
             throw RendererError.textureTooLarge(width: array.width, height: array.height, max: maxTextureDimension)
         }
@@ -114,8 +123,16 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         self.array = array
         self.texture = texture
         self.displayMode = array.elementType == .complex64 ? .complexAbs : .scalar
-        resetWindowLevel()
-        resetView()
+        if let windowLevel {
+            setWindowLevel(window: windowLevel.window, level: windowLevel.level)
+        } else {
+            resetWindowLevel()
+        }
+        if let viewportState {
+            apply(viewportState, to: array)
+        } else {
+            resetView()
+        }
         requestDraw()
         onDisplayChanged?()
     }
@@ -137,19 +154,53 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             return
         }
 
-        let size = view.bounds.size
-        guard size.width > 0, size.height > 0 else {
+        guard let fitScale = fitScale(for: array, in: view.bounds.size) else {
             scale = 1
             offset = .zero
             return
         }
 
-        let fitScale = min(size.width / CGFloat(array.width), size.height / CGFloat(array.height))
+        let size = view.bounds.size
         scale = fitScale
         offset = CGPoint(
             x: (size.width - CGFloat(array.width) * scale) * 0.5,
             y: (size.height - CGFloat(array.height) * scale) * 0.5
         )
+    }
+
+    func viewportState() -> ViewportState? {
+        guard
+            let array,
+            let view,
+            scale.isFinite,
+            scale > 0,
+            let fitScale = fitScale(for: array, in: view.bounds.size)
+        else {
+            return nil
+        }
+
+        let size = view.bounds.size
+        let viewCenter = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+        let imageCenter = CGPoint(
+            x: (viewCenter.x - offset.x) / scale,
+            y: (viewCenter.y - offset.y) / scale
+        )
+        let normalizedCenter = CGPoint(
+            x: imageCenter.x / CGFloat(array.width),
+            y: imageCenter.y / CGFloat(array.height)
+        )
+        let zoom = scale / fitScale
+
+        guard
+            normalizedCenter.x.isFinite,
+            normalizedCenter.y.isFinite,
+            zoom.isFinite,
+            zoom > 0
+        else {
+            return nil
+        }
+
+        return ViewportState(normalizedCenter: normalizedCenter, zoom: zoom)
     }
 
     func zoom(by factor: CGFloat, around point: CGPoint) {
@@ -309,6 +360,52 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             Vertex(position: ndc(x: right, y: top), texCoord: SIMD2<Float>(1, 0)),
             Vertex(position: ndc(x: right, y: bottom), texCoord: SIMD2<Float>(1, 1))
         ]
+    }
+
+    private func apply(_ state: ViewportState, to array: NPYArray) {
+        guard
+            let view,
+            state.normalizedCenter.x.isFinite,
+            state.normalizedCenter.y.isFinite,
+            state.zoom.isFinite,
+            state.zoom > 0,
+            let fitScale = fitScale(for: array, in: view.bounds.size)
+        else {
+            resetView()
+            return
+        }
+
+        let size = view.bounds.size
+        let minZoom = 0.01 / fitScale
+        let maxZoom = 256 / fitScale
+        let nextZoom = clamp(state.zoom, min: minZoom, max: maxZoom)
+        let normalizedCenter = CGPoint(
+            x: clamp(state.normalizedCenter.x, min: 0, max: 1),
+            y: clamp(state.normalizedCenter.y, min: 0, max: 1)
+        )
+        let viewCenter = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+
+        scale = fitScale * nextZoom
+        offset = CGPoint(
+            x: viewCenter.x - normalizedCenter.x * CGFloat(array.width) * scale,
+            y: viewCenter.y - normalizedCenter.y * CGFloat(array.height) * scale
+        )
+    }
+
+    private func fitScale(for array: NPYArray, in size: CGSize) -> CGFloat? {
+        guard size.width > 0, size.height > 0 else {
+            return nil
+        }
+
+        let fitScale = min(size.width / CGFloat(array.width), size.height / CGFloat(array.height))
+        guard fitScale.isFinite, fitScale > 0 else {
+            return nil
+        }
+        return fitScale
+    }
+
+    private func clamp(_ value: CGFloat, min lowerBound: CGFloat, max upperBound: CGFloat) -> CGFloat {
+        min(max(value, lowerBound), upperBound)
     }
 }
 

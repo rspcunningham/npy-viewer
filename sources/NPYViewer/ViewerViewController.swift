@@ -31,6 +31,11 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
     private static let emptyStatePrompt = "Open a .npy file or directory to begin"
 
+    private struct WindowLevelState {
+        let window: Float
+        let level: Float
+    }
+
     private let metalView = ImageMetalView(frame: .zero, device: nil)
     private let emptyStateView = CanvasEmptyStateView()
     private let emptyStateLabel = NSTextField(labelWithString: ViewerViewController.emptyStatePrompt)
@@ -47,6 +52,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private let levelValueLabel = NSTextField(labelWithString: "0.50")
     private let resetWindowLevelButton = NSButton(title: "Reset W/L", target: nil, action: nil)
     private let homeButton = NSButton(frame: .zero)
+    private let preserveViewportButton = NSButton(checkboxWithTitle: "Preserve View", target: nil, action: nil)
     private let fileLabel = NSTextField(labelWithString: "No file")
     private let shapeLabel = NSTextField(labelWithString: "shape -")
     private let dtypeLabel = NSTextField(labelWithString: "dtype -")
@@ -58,6 +64,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private var sessionDirectoryURL: URL?
     private var sessionItems: [ViewerItem] = []
     private var selectedSessionIndex: Int?
+    private var displayedURL: URL?
+    private var windowLevelByURL: [URL: WindowLevelState] = [:]
     private var hoverText: String?
     private var openRequestID = 0
     private var fileNavigatorWidthConstraint: NSLayoutConstraint?
@@ -196,6 +204,9 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private func openSession(directoryURL: URL?, urls: [URL], selectedIndex: Int) {
         sessionDirectoryURL = directoryURL
         sessionItems = urls.map(ViewerItem.init(url:))
+        selectedSessionIndex = nil
+        displayedURL = nil
+        windowLevelByURL = [:]
         updateFileNavigator()
         selectSessionItem(at: selectedIndex)
     }
@@ -207,6 +218,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
         openRequestID &+= 1
         let requestID = openRequestID
+        let shouldPreserveViewport = shouldPreserveViewport(forSelectionAt: index)
+        saveCurrentWindowLevelState()
         selectedSessionIndex = index
         hoverText = nil
         updateFileNavigatorSelection()
@@ -231,9 +244,10 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
                 switch result {
                 case .success(let array):
-                    self.finishOpen(array: array, url: url)
+                    self.finishOpen(array: array, url: url, preservingViewport: shouldPreserveViewport)
                 case .failure(let error):
                     self.renderer?.clearArray()
+                    self.displayedURL = nil
                     self.onTitleChanged?(self.title(for: url))
                     self.showError(error, title: "Could Not Open \(url.lastPathComponent)")
                     self.updateInspector()
@@ -340,11 +354,13 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
             window: Float(windowSlider.doubleValue),
             level: Float(levelSlider.doubleValue)
         )
+        saveCurrentWindowLevelState()
         updateWindowLevelControls()
     }
 
     @objc private func resetWindowLevelButtonPressed(_ sender: NSButton) {
         renderer?.resetWindowLevel()
+        saveCurrentWindowLevelState()
         updateInspector()
     }
 
@@ -369,7 +385,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
         configurePopUps()
         configureWindowLevelControls()
-        configureHomeButton()
+        configureViewControls()
         configureMetadataLabels()
 
         let stack = NSStackView()
@@ -382,7 +398,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         stack.addArrangedSubview(makeControlGroup(title: "Mode", control: modePopUp))
         stack.addArrangedSubview(makeControlGroup(title: "Colormap", control: colorMapPopUp))
         stack.addArrangedSubview(makeWindowLevelGroup())
-        stack.addArrangedSubview(homeButton)
+        stack.addArrangedSubview(makeViewGroup())
         stack.addArrangedSubview(makeSpacer(height: 10))
         stack.addArrangedSubview(fileLabel)
         stack.addArrangedSubview(shapeLabel)
@@ -544,7 +560,14 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         resetWindowLevelButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
     }
 
-    private func configureHomeButton() {
+    private func configureViewControls() {
+        preserveViewportButton.state = .on
+        preserveViewportButton.controlSize = .small
+        preserveViewportButton.font = .systemFont(ofSize: 13)
+        preserveViewportButton.toolTip = "Keep zoom and center while switching files"
+        preserveViewportButton.translatesAutoresizingMaskIntoConstraints = false
+        preserveViewportButton.heightAnchor.constraint(equalToConstant: 22).isActive = true
+
         homeButton.title = "Reset View"
         homeButton.target = self
         homeButton.action = #selector(homeButtonPressed(_:))
@@ -619,6 +642,28 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
             levelRow.widthAnchor.constraint(equalTo: group.widthAnchor),
             levelSlider.widthAnchor.constraint(equalTo: group.widthAnchor),
             resetWindowLevelButton.widthAnchor.constraint(equalTo: group.widthAnchor)
+        ])
+
+        return group
+    }
+
+    private func makeViewGroup() -> NSView {
+        let titleLabel = makeSectionTitleLabel("View")
+
+        let group = NSStackView(views: [
+            titleLabel,
+            preserveViewportButton,
+            homeButton
+        ])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 6
+        group.distribution = .fill
+
+        NSLayoutConstraint.activate([
+            titleLabel.widthAnchor.constraint(equalTo: group.widthAnchor),
+            preserveViewportButton.widthAnchor.constraint(equalTo: group.widthAnchor),
+            homeButton.widthAnchor.constraint(equalTo: group.widthAnchor)
         ])
 
         return group
@@ -786,21 +831,44 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         updateCursorText()
     }
 
-    private func finishOpen(array: NPYArray, url: URL) {
+    private func finishOpen(array: NPYArray, url: URL, preservingViewport: Bool) {
         let previousHoverText = hoverText
+        let viewportState = preservingViewport && preserveViewportButton.state == .on ? renderer?.viewportState() : nil
+        let windowLevelState = windowLevelByURL[url]
         hoverText = nil
 
         do {
-            try renderer?.setArray(array)
+            try renderer?.setArray(
+                array,
+                preserving: viewportState,
+                windowLevel: windowLevelState.map { (window: $0.window, level: $0.level) }
+            )
+            displayedURL = url
             onTitleChanged?(title(for: url))
             updateInspector()
         } catch {
             hoverText = previousHoverText
             renderer?.clearArray()
+            displayedURL = nil
             onTitleChanged?(title(for: url))
             showError(error, title: "Could Not Open \(url.lastPathComponent)")
             updateInspector()
         }
+    }
+
+    private func shouldPreserveViewport(forSelectionAt index: Int) -> Bool {
+        preserveViewportButton.state == .on &&
+            sessionItems.count > 1 &&
+            selectedSessionIndex != nil &&
+            selectedSessionIndex != index
+    }
+
+    private func saveCurrentWindowLevelState() {
+        guard let url = displayedURL, let renderer, renderer.array != nil else {
+            return
+        }
+
+        windowLevelByURL[url] = WindowLevelState(window: renderer.window, level: renderer.level)
     }
 
     private var selectedURL: URL? {
