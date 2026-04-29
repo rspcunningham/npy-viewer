@@ -21,6 +21,8 @@ jobs:
         steps:
             - name: Checkout
               uses: actions/checkout@v6
+              with:
+                  fetch-depth: 0
 
             - name: Import Developer ID certificate
               env:
@@ -84,34 +86,49 @@ jobs:
                   APP_VERSION="${GITHUB_REF_NAME#v}"
                   ZIP="dist/release/NPYViewer-${APP_VERSION}-macOS-arm64.zip"
                   CHECKSUMS="dist/release/SHA256SUMS.txt"
-                  NOTES="$RUNNER_TEMP/release-notes.md"
+                  RELEASE_BODY="$RUNNER_TEMP/release-body.md"
+                  TAG_MESSAGE="$RUNNER_TEMP/tag-message.md"
 
-                  cat > "$NOTES" <<EOF
-                  Native macOS Metal viewer for 2D NumPy .npy images.
+                  if ! git rev-parse --verify "refs/tags/${GITHUB_REF_NAME}^{tag}" >/dev/null 2>&1; then
+                    echo "Release tags must be annotated and contain release notes." >&2
+                    echo "Create one with: git tag -a ${GITHUB_REF_NAME} -F <notes-file>" >&2
+                    exit 1
+                  fi
 
-                  Install with:
+                  git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' > "$TAG_MESSAGE"
+                  if ! grep -q '[^[:space:]]' "$TAG_MESSAGE"; then
+                    echo "Annotated tag ${GITHUB_REF_NAME} has an empty message." >&2
+                    exit 1
+                  fi
 
-                  \`\`\`bash
-                  curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/install.sh | bash
-                  \`\`\`
-
-                  SHA-256:
-                  \`\`\`
-                  $(cat "$CHECKSUMS")
-                  \`\`\`
-
-                  Built from commit:
-                  \`\`\`
-                  $GITHUB_SHA
-                  \`\`\`
-                  EOF
+                  {
+                    echo "Native macOS Metal viewer for 2D NumPy .npy images."
+                    echo
+                    cat "$TAG_MESSAGE"
+                    echo
+                    echo "Install with:"
+                    echo
+                    echo '```bash'
+                    echo "curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/install.sh | bash"
+                    echo '```'
+                    echo
+                    echo "SHA-256:"
+                    echo '```'
+                    cat "$CHECKSUMS"
+                    echo '```'
+                    echo
+                    echo "Built from commit:"
+                    echo '```'
+                    echo "$GITHUB_SHA"
+                    echo '```'
+                  } > "$RELEASE_BODY"
 
                   if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
                     gh release upload "$GITHUB_REF_NAME" "$ZIP" "$CHECKSUMS" --clobber
-                    gh release edit "$GITHUB_REF_NAME" --notes-file "$NOTES"
+                    gh release edit "$GITHUB_REF_NAME" --notes-file "$RELEASE_BODY"
                   else
                     gh release create "$GITHUB_REF_NAME" "$ZIP" "$CHECKSUMS" \
                       --target "$GITHUB_SHA" \
                       --title "NPYViewer $GITHUB_REF_NAME" \
-                      --notes-file "$NOTES"
+                      --notes-file "$RELEASE_BODY"
                   fi

@@ -1,6 +1,8 @@
 # NPYViewer
 
-Native macOS `.npy` image viewer for ParaSight data.
+Native macOS `.npy` viewer for real and complex-valued images. 
+
+![UI Screenshot](/docs/ui.png)
 
 Install or update:
 
