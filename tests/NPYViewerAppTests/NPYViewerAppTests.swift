@@ -40,6 +40,32 @@ import Testing
 }
 
 @MainActor
+@Test func viewerControllerReloadsDirectoryContents() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("NPYViewerReloadTests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let firstURL = directory.appendingPathComponent("first.npy")
+    try makeNPY(descr: "<f4", shape: [1, 1], payload: floats([1])).write(to: firstURL)
+
+    let controller = ViewerViewController()
+    controller.loadView()
+    controller.open(url: directory)
+    #expect(controller.numberOfRows(in: NSTableView()) == 1)
+
+    let secondURL = directory.appendingPathComponent("second.npy")
+    try makeNPY(descr: "<f4", shape: [1, 1], payload: floats([2])).write(to: secondURL)
+    controller.reloadSession()
+    #expect(controller.numberOfRows(in: NSTableView()) == 2)
+
+    try FileManager.default.removeItem(at: firstURL)
+    try FileManager.default.removeItem(at: secondURL)
+    controller.reloadSession()
+    #expect(controller.numberOfRows(in: NSTableView()) == 0)
+}
+
+@MainActor
 @Test func colorMapScaleViewFormatsTickLabels() {
     let scaleView = ColorMapScaleView(frame: NSRect(x: 0, y: 0, width: 160, height: 40))
 

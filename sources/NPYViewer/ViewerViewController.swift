@@ -77,6 +77,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
     private let resetWindowLevelButton = NSButton(title: "Reset W/L", target: nil, action: nil)
     private let exportPNGButton = NSButton(title: "Export PNG...", target: nil, action: nil)
     private let homeButton = NSButton(frame: .zero)
+    private let reloadFilesButton = NSButton(title: "Reload Files", target: nil, action: nil)
     private let preserveViewportButton = NSButton(checkboxWithTitle: "Preserve View", target: nil, action: nil)
     private let fileLabel = NSTextField(labelWithString: "No file")
     private let shapeLabel = NSTextField(labelWithString: "shape -")
@@ -245,25 +246,59 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         }
     }
 
-    private func openSession(directoryURL: URL?, urls: [URL], selectedIndex: Int) {
+    private func openSession(
+        directoryURL: URL?,
+        urls: [URL],
+        selectedIndex: Int,
+        preservingViewSettings: Bool = false,
+        preservingViewport: Bool = false
+    ) {
         sessionDirectoryURL = directoryURL
         sessionItems = urls.map(ViewerItem.init(url:))
         selectedSessionIndex = nil
         displayedURL = nil
-        windowLevelByURL = [:]
-        displayModeByURL = [:]
+        if preservingViewSettings {
+            let urls = Set(urls)
+            windowLevelByURL = windowLevelByURL.filter { urls.contains($0.key) }
+            displayModeByURL = displayModeByURL.filter { urls.contains($0.key) }
+        } else {
+            windowLevelByURL = [:]
+            displayModeByURL = [:]
+        }
         updateFileNavigator()
-        selectSessionItem(at: selectedIndex)
+        selectSessionItem(at: selectedIndex, preservingCurrentViewport: preservingViewport)
     }
 
-    private func selectSessionItem(at index: Int) {
+    func reloadSession() {
+        saveCurrentWindowLevelState()
+        saveCurrentDisplayModeState()
+
+        if let sessionDirectoryURL {
+            reloadDirectorySession(sessionDirectoryURL)
+            return
+        }
+
+        guard let url = selectedURL ?? displayedURL ?? sessionItems.first?.url else {
+            return
+        }
+
+        openSession(
+            directoryURL: nil,
+            urls: [url],
+            selectedIndex: 0,
+            preservingViewSettings: true,
+            preservingViewport: true
+        )
+    }
+
+    private func selectSessionItem(at index: Int, preservingCurrentViewport: Bool = false) {
         guard sessionItems.indices.contains(index) else {
             return
         }
 
         openRequestID &+= 1
         let requestID = openRequestID
-        let shouldPreserveViewport = shouldPreserveViewport(forSelectionAt: index)
+        let shouldPreserveViewport = preservingCurrentViewport || shouldPreserveViewport(forSelectionAt: index)
         saveCurrentWindowLevelState()
         saveCurrentDisplayModeState()
         selectedSessionIndex = index
@@ -417,6 +452,10 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
 
     @objc private func homeButtonPressed(_ sender: NSButton) {
         resetZoom()
+    }
+
+    @objc private func reloadFilesButtonPressed(_ sender: NSButton) {
+        reloadSession()
     }
 
     @objc private func exportPNGButtonPressed(_ sender: NSButton) {
@@ -752,6 +791,15 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         homeButton.toolTip = "Reset view"
         homeButton.translatesAutoresizingMaskIntoConstraints = false
         homeButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
+
+        reloadFilesButton.target = self
+        reloadFilesButton.action = #selector(reloadFilesButtonPressed(_:))
+        reloadFilesButton.bezelStyle = .rounded
+        reloadFilesButton.controlSize = .regular
+        reloadFilesButton.font = .systemFont(ofSize: 13)
+        reloadFilesButton.toolTip = "Re-read the current file or directory from disk"
+        reloadFilesButton.translatesAutoresizingMaskIntoConstraints = false
+        reloadFilesButton.heightAnchor.constraint(equalToConstant: 28).isActive = true
     }
 
     private func configureExportControls() {
@@ -880,6 +928,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         let group = NSStackView(views: [
             titleLabel,
             preserveViewportButton,
+            reloadFilesButton,
             homeButton
         ])
         group.orientation = .vertical
@@ -890,6 +939,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         NSLayoutConstraint.activate([
             titleLabel.widthAnchor.constraint(equalTo: group.widthAnchor),
             preserveViewportButton.widthAnchor.constraint(equalTo: group.widthAnchor),
+            reloadFilesButton.widthAnchor.constraint(equalTo: group.widthAnchor),
             homeButton.widthAnchor.constraint(equalTo: group.widthAnchor)
         ])
 
@@ -934,6 +984,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         updateWindowLevelControls()
         updateColorMapScaleView()
         updateExportControls()
+        updateReloadControls()
 
         guard let array = renderer?.array else {
             emptyStateView.isHidden = false
@@ -1014,6 +1065,10 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
         exportPNGButton.title = isExportingPNG ? "Exporting..." : "Export PNG..."
     }
 
+    private func updateReloadControls() {
+        reloadFilesButton.isEnabled = sessionDirectoryURL != nil || !sessionItems.isEmpty || displayedURL != nil
+    }
+
     private func updateCursorText() {
         guard let array = renderer?.array else {
             cursorLabel.stringValue = "x -  y -"
@@ -1079,6 +1134,66 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate, NSTa
             sessionItems.count > 1 &&
             selectedSessionIndex != nil &&
             selectedSessionIndex != index
+    }
+
+    private func reloadDirectorySession(_ directoryURL: URL) {
+        let previousSelectedURL = selectedURL ?? displayedURL
+        let previousSelectedIndex = selectedSessionIndex
+
+        do {
+            let urls = try NPYFileDiscovery.npyFiles(in: directoryURL)
+            guard !urls.isEmpty else {
+                clearSession(
+                    directoryURL: directoryURL,
+                    emptyStateMessage: "No .npy files found in \(directoryURL.lastPathComponent)."
+                )
+                return
+            }
+
+            let selectedIndex = reloadedSelectionIndex(
+                in: urls,
+                preferredURL: previousSelectedURL,
+                previousIndex: previousSelectedIndex
+            )
+            openSession(
+                directoryURL: directoryURL,
+                urls: urls,
+                selectedIndex: selectedIndex,
+                preservingViewSettings: true,
+                preservingViewport: true
+            )
+        } catch {
+            showError(error, title: "Could Not Reload \(directoryURL.lastPathComponent)")
+        }
+    }
+
+    private func clearSession(directoryURL: URL?, emptyStateMessage: String) {
+        openRequestID &+= 1
+        sessionDirectoryURL = directoryURL
+        sessionItems = []
+        selectedSessionIndex = nil
+        displayedURL = nil
+        hoverText = nil
+        windowLevelByURL = [:]
+        displayModeByURL = [:]
+        renderer?.clearArray()
+        onTitleChanged?(directoryURL?.lastPathComponent ?? "NPYViewer")
+        updateFileNavigator()
+        emptyStateLabel.stringValue = emptyStateMessage
+        emptyStateButton.isHidden = false
+        updateInspector()
+    }
+
+    private func reloadedSelectionIndex(in urls: [URL], preferredURL: URL?, previousIndex: Int?) -> Int {
+        if let preferredURL, let index = urls.firstIndex(of: preferredURL) {
+            return index
+        }
+
+        if let previousIndex {
+            return min(max(previousIndex, 0), urls.count - 1)
+        }
+
+        return 0
     }
 
     private func saveCurrentWindowLevelState() {
