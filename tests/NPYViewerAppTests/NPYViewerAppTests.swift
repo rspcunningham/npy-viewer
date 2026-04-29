@@ -66,6 +66,26 @@ import Testing
 }
 
 @MainActor
+@Test func fileNavigatorControllerTracksURLsAndSelection() {
+    let fallback = NSView()
+    let controller = FileNavigatorController(fallbackFirstResponder: fallback)
+    let urls = [
+        URL(fileURLWithPath: "/tmp/a.npy"),
+        URL(fileURLWithPath: "/tmp/b.npy")
+    ]
+
+    controller.setURLs(urls)
+    #expect(controller.itemCount == 2)
+    #expect(controller.numberOfRows(in: NSTableView()) == 2)
+
+    controller.selectRow(1)
+    #expect(controller.selectedRow == 1)
+
+    controller.setURLs([])
+    #expect(controller.itemCount == 0)
+}
+
+@MainActor
 @Test func colorMapScaleViewFormatsTickLabels() {
     let scaleView = ColorMapScaleView(frame: NSRect(x: 0, y: 0, width: 160, height: 40))
 
@@ -182,6 +202,64 @@ import Testing
 }
 
 @MainActor
+@Test func rendererLoadsCompiledShaderLibrary() throws {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        return
+    }
+    guard let libraryURL = MetalRenderer.defaultShaderLibraryURL() else {
+        Issue.record("Expected NPYVIEWER_METALLIB_PATH or bundled default.metallib")
+        return
+    }
+
+    let library = try device.makeLibrary(URL: libraryURL)
+    #expect(library.makeFunction(name: "vertex_main") != nil)
+    #expect(library.makeFunction(name: "fragment_main") != nil)
+
+    let view = MTKView(frame: NSRect(x: 0, y: 0, width: 64, height: 64), device: nil)
+    _ = try MetalRenderer(view: view, shaderLibraryURL: libraryURL)
+}
+
+@MainActor
+@Test func rendererFailsForMissingShaderLibrary() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+        return
+    }
+
+    let missingURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("missing-\(UUID().uuidString).metallib")
+    let view = MTKView(frame: NSRect(x: 0, y: 0, width: 64, height: 64), device: nil)
+
+    expectRendererError("missing shader library", {
+        _ = try MetalRenderer(view: view, shaderLibraryURL: missingURL)
+    }, matches: { error in
+        guard case .shaderCompile(let message) = error else { return false }
+        return message.contains(missingURL.lastPathComponent)
+    })
+}
+
+@MainActor
+@Test func rendererLoadsUnsignedIntegerArrays() throws {
+    guard MTLCreateSystemDefaultDevice() != nil else {
+        return
+    }
+
+    let view = MTKView(frame: NSRect(x: 0, y: 0, width: 64, height: 64), device: nil)
+    let renderer = try MetalRenderer(view: view)
+
+    let uint8Array = try NPYArray(data: makeNPY(descr: "|u1", shape: [2, 2], payload: Data([0, 128, 255, 64])))
+    try renderer.setArray(uint8Array)
+    #expect(renderer.array === uint8Array)
+    #expect(renderer.displayMode == .scalar)
+
+    let uint16Array = try NPYArray(data: makeNPY(descr: "<u2", shape: [2, 1, 1], payload: uint16s([0, 65_535])))
+    try renderer.setArray(uint16Array)
+    #expect(renderer.array === uint16Array)
+    #expect(renderer.displayMode == .scalar)
+    renderer.setDisplayMode(.complexPhase)
+    #expect(renderer.displayMode == .scalar)
+}
+
+@MainActor
 @Test func rendererHandlesComplexDisplayModesAndClearState() throws {
     guard MTLCreateSystemDefaultDevice() != nil else {
         return
@@ -269,6 +347,11 @@ private func makeNPY(descr: String, shape: [Int], payload: Data) -> Data {
 private func floats(_ values: [Float]) -> Data {
     var values = values
     return Data(bytes: &values, count: values.count * MemoryLayout<Float>.size)
+}
+
+private func uint16s(_ values: [UInt16]) -> Data {
+    var values = values.map { UInt16(littleEndian: $0) }
+    return Data(bytes: &values, count: values.count * MemoryLayout<UInt16>.size)
 }
 
 private func isClose(_ lhs: CGFloat, _ rhs: CGFloat, tolerance: CGFloat = 0.0001) -> Bool {

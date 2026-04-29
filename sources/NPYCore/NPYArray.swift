@@ -1,11 +1,17 @@
 import Foundation
 
 public enum NPYElementType: Equatable, Sendable {
+    case uint8
+    case uint16
     case float32
     case complex64
 
     public var bytesPerElement: Int {
         switch self {
+        case .uint8:
+            1
+        case .uint16:
+            2
         case .float32:
             4
         case .complex64:
@@ -15,11 +21,19 @@ public enum NPYElementType: Equatable, Sendable {
 
     public var dtypeName: String {
         switch self {
+        case .uint8:
+            "uint8"
+        case .uint16:
+            "uint16"
         case .float32:
             "float32"
         case .complex64:
             "complex64"
         }
+    }
+
+    public var isComplex: Bool {
+        self == .complex64
     }
 }
 
@@ -65,9 +79,9 @@ public enum NPYError: LocalizedError {
         case .malformedHeader(let reason):
             "Malformed .npy header: \(reason)."
         case .unsupportedDType(let dtype):
-            "Unsupported dtype \(dtype). Only float32 and complex64 are supported in this build."
+            "Unsupported dtype \(dtype). Only uint8, uint16, float32, and complex64 are supported in this build."
         case .unsupportedShape(let shape):
-            "Unsupported shape \(shape). Only 2D arrays are supported in this build."
+            "Unsupported shape \(shape). Only 2D arrays and 2D arrays with one trailing channel are supported in this build."
         case .fortranOrderUnsupported:
             "Fortran-order .npy files are not supported."
         case .dataTooShort(let expected, let actual):
@@ -130,6 +144,12 @@ public final class NPYArray: @unchecked Sendable {
 
             let payload = baseAddress.advanced(by: dataOffset)
             switch elementType {
+            case .uint8:
+                let values = payload.bindMemory(to: UInt8.self, capacity: pixelCount)
+                return .scalar(Float(values[linearIndex]))
+            case .uint16:
+                let values = payload.bindMemory(to: UInt16.self, capacity: pixelCount)
+                return .scalar(Float(UInt16(littleEndian: values[linearIndex])))
             case .float32:
                 let values = payload.bindMemory(to: Float.self, capacity: pixelCount)
                 return .scalar(values[linearIndex])
@@ -209,6 +229,10 @@ private extension NPYArray {
 
         let elementType: NPYElementType
         switch dtype {
+        case "|u1":
+            elementType = .uint8
+        case "<u2", "=u2":
+            elementType = .uint16
         case "<f4", "=f4":
             elementType = .float32
         case "<c8", "=c8":
@@ -221,19 +245,30 @@ private extension NPYArray {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-            .compactMap(Int.init)
-
-        guard shape.count == 2, shape[0] > 0, shape[1] > 0 else {
-            throw NPYError.unsupportedShape(shape)
+        let parsedShape = try shape.map { token in
+            guard let dimension = Int(token) else {
+                throw NPYError.malformedHeader("shape contains non-integer dimension")
+            }
+            return dimension
         }
 
-        let payloadByteCount = shape[0] * shape[1] * elementType.bytesPerElement
+        let isTwoDimensional = parsedShape.count == 2
+        let isSingleChannelImage = parsedShape.count == 3 && parsedShape[2] == 1
+        guard
+            (isTwoDimensional || isSingleChannelImage),
+            parsedShape[0] > 0,
+            parsedShape[1] > 0
+        else {
+            throw NPYError.unsupportedShape(parsedShape)
+        }
+
+        let payloadByteCount = parsedShape[0] * parsedShape[1] * elementType.bytesPerElement
         let actualPayloadByteCount = data.count - dataOffset
         guard actualPayloadByteCount >= payloadByteCount else {
             throw NPYError.dataTooShort(expected: payloadByteCount, actual: actualPayloadByteCount)
         }
 
-        return ParsedHeader(dataOffset: dataOffset, shape: shape, elementType: elementType)
+        return ParsedHeader(dataOffset: dataOffset, shape: parsedShape, elementType: elementType)
     }
 
     static func byte(_ data: Data, _ offset: Int) -> UInt8 {

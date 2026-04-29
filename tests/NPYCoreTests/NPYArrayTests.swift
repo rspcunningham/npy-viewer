@@ -24,11 +24,34 @@ import Testing
     #expect(array.pixelValue(x: 1, y: 0) == .complex(real: 3, imag: 4))
 }
 
+@Test func parsesUnsignedIntegerNPY() throws {
+    let uint8Data = makeNPY(descr: "|u1", shape: [2, 2], payload: Data([0, 127, 255, 3]))
+    let uint8Array = try NPYArray(data: uint8Data)
+    #expect(uint8Array.shape == [2, 2])
+    #expect(uint8Array.elementType == .uint8)
+    #expect(uint8Array.payloadByteCount == 4)
+    #expect(uint8Array.pixelValue(x: 0, y: 1) == .scalar(255))
+
+    let uint16Data = makeNPY(descr: "<u2", shape: [1, 2, 1], payload: uint16s([0, 65_535]))
+    let uint16Array = try NPYArray(data: uint16Data)
+    #expect(uint16Array.shape == [1, 2, 1])
+    #expect(uint16Array.height == 1)
+    #expect(uint16Array.width == 2)
+    #expect(uint16Array.elementType == .uint16)
+    #expect(uint16Array.payloadByteCount == 4)
+    #expect(uint16Array.pixelValue(x: 1, y: 0) == .scalar(65_535))
+}
+
 @Test func parsesNativeEndianDTypesAndHeaderVersions() throws {
     let floatData = makeNPY(descr: "=f4", shape: [1, 1], payload: floats([7]), major: 2)
     let floatArray = try NPYArray(data: floatData)
     #expect(floatArray.elementType == .float32)
     #expect(floatArray.pixelValue(x: 0, y: 0) == .scalar(7))
+
+    let uint16Data = makeNPY(descr: "=u2", shape: [1, 1], payload: uint16s([42]), major: 2)
+    let uint16Array = try NPYArray(data: uint16Data)
+    #expect(uint16Array.elementType == .uint16)
+    #expect(uint16Array.pixelValue(x: 0, y: 0) == .scalar(42))
 
     let complexData = makeNPY(descr: "=c8", shape: [1, 1], payload: floats([3, -4]), major: 3)
     let complexArray = try NPYArray(data: complexData)
@@ -133,6 +156,13 @@ import Testing
             return true
         })
     }
+
+    expectNPYError("malformed shape token", {
+        _ = try NPYArray(data: makeNPY(header: "{'descr': '<f4', 'fortran_order': False, 'shape': (2, nope), }", payload: floats([1, 2])))
+    }, matches: { error in
+        guard case .malformedHeader("shape contains non-integer dimension") = error else { return false }
+        return true
+    })
 }
 
 @Test func rejectsUnsupportedDTypeFortranOrderAndShortPayload() {
@@ -140,6 +170,13 @@ import Testing
         _ = try NPYArray(data: makeNPY(descr: "<i4", shape: [1, 1], payload: floats([1])))
     }, matches: { error in
         guard case .unsupportedDType("<i4") = error else { return false }
+        return true
+    })
+
+    expectNPYError("big-endian uint16", {
+        _ = try NPYArray(data: makeNPY(descr: ">u2", shape: [1, 1], payload: uint16s([1])))
+    }, matches: { error in
+        guard case .unsupportedDType(">u2") = error else { return false }
         return true
     })
 
@@ -163,7 +200,7 @@ import Testing
         [4],
         [0, 2],
         [2, 0],
-        [2, 2, 1]
+        [2, 2, 3]
     ]
 
     for shape in cases {
@@ -183,10 +220,16 @@ import Testing
 }
 
 @Test func exposesElementAndPixelDisplayStrings() {
+    #expect(NPYElementType.uint8.bytesPerElement == 1)
+    #expect(NPYElementType.uint8.dtypeName == "uint8")
+    #expect(!NPYElementType.uint8.isComplex)
+    #expect(NPYElementType.uint16.bytesPerElement == 2)
+    #expect(NPYElementType.uint16.dtypeName == "uint16")
     #expect(NPYElementType.float32.bytesPerElement == 4)
     #expect(NPYElementType.float32.dtypeName == "float32")
     #expect(NPYElementType.complex64.bytesPerElement == 8)
     #expect(NPYElementType.complex64.dtypeName == "complex64")
+    #expect(NPYElementType.complex64.isComplex)
 
     #expect(NPYPixelValue.scalar(1.25).displayString == "1.25")
     #expect(NPYPixelValue.complex(real: 3, imag: 4).displayString == "real 3  imag 4  abs 5  phase 0.9272952")
@@ -268,6 +311,11 @@ private func makeNPYWithRawHeaderBytes(_ headerBytes: Data, major: UInt8) -> Dat
 private func floats(_ values: [Float]) -> Data {
     var values = values
     return Data(bytes: &values, count: values.count * MemoryLayout<Float>.size)
+}
+
+private func uint16s(_ values: [UInt16]) -> Data {
+    var values = values.map { UInt16(littleEndian: $0) }
+    return Data(bytes: &values, count: values.count * MemoryLayout<UInt16>.size)
 }
 
 private func expectNPYError(

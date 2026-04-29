@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="NPYViewer"
 BUNDLE_ID="com.parasight.NPYViewer"
-MIN_SYSTEM_VERSION="15.0"
+MIN_SYSTEM_VERSION="11.0"
 APP_VERSION="${APP_VERSION:-0.0.1}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 SIGNING_MODE="${SIGNING_MODE:-development}"
@@ -161,6 +161,7 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$ROOT_DIR/resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
+MIN_SYSTEM_VERSION="$MIN_SYSTEM_VERSION" "$ROOT_DIR/scripts/compile_shaders.sh" "$APP_RESOURCES/default.metallib"
 chmod +x "$APP_BINARY"
 write_info_plist
 sign_app "$(resolve_signing_identity)"

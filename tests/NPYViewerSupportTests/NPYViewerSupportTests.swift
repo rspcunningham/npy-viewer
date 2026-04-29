@@ -38,6 +38,12 @@ import Testing
     }
 }
 
+@Test func colorMapsProvideSharedSampling() {
+    #expect(ColorMap.gray.color(forNormalizedValue: 0.25) == ColorMapRGB(red: 0.25, green: 0.25, blue: 0.25))
+    #expect(ColorMap.viridis.color(forNormalizedValue: 0) == ColorMapRGB(red: 0.267, green: 0.005, blue: 0.329))
+    #expect(ColorMap.magma.color(forNormalizedValue: 1) == ColorMapRGB(red: 0.988, green: 0.992, blue: 0.749))
+}
+
 @Test func formatsViewerNumericFields() {
     #expect(ViewerFormatting.hoverFieldWidth == 9)
     #expect(ViewerFormatting.indexWidth(for: 0) == 1)

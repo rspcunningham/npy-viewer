@@ -78,6 +78,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let pipelineState: MTLRenderPipelineState
+    private let colorMapTexture: MTLTexture
     private weak var view: MTKView?
 
     private(set) var array: NPYArray?
@@ -91,7 +92,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
     var onDisplayChanged: (() -> Void)?
 
-    init(view: MTKView) throws {
+    init(view: MTKView, shaderLibraryURL: URL? = nil) throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw RendererError.noMetalDevice
         }
@@ -101,17 +102,19 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
         self.device = device
         self.commandQueue = commandQueue
+        self.colorMapTexture = try Self.makeColorMapTexture(device: device)
 
-        let library: MTLLibrary
-        do {
-            library = try device.makeLibrary(source: Self.shaderSource, options: nil)
-        } catch {
-            throw RendererError.shaderCompile(error.localizedDescription)
-        }
+        let library = try Self.makeShaderLibrary(device: device, explicitURL: shaderLibraryURL)
 
         let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.vertexFunction = library.makeFunction(name: "vertex_main")
-        descriptor.fragmentFunction = library.makeFunction(name: "fragment_main")
+        guard let vertexFunction = library.makeFunction(name: "vertex_main") else {
+            throw RendererError.shaderCompile("Missing vertex_main in default.metallib")
+        }
+        guard let fragmentFunction = library.makeFunction(name: "fragment_main") else {
+            throw RendererError.shaderCompile("Missing fragment_main in default.metallib")
+        }
+        descriptor.vertexFunction = vertexFunction
+        descriptor.fragmentFunction = fragmentFunction
         descriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
         self.pipelineState = try device.makeRenderPipelineState(descriptor: descriptor)
 
@@ -137,7 +140,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         }
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: array.elementType == .float32 ? .r32Float : .rg32Float,
+            pixelFormat: pixelFormat(for: array.elementType),
             width: array.width,
             height: array.height,
             mipmapped: false
@@ -160,10 +163,10 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
         self.array = array
         self.texture = texture
-        if array.elementType == .complex64, let restoredDisplayMode, restoredDisplayMode != .scalar {
+        if array.elementType.isComplex, let restoredDisplayMode, restoredDisplayMode != .scalar {
             self.displayMode = restoredDisplayMode
         } else {
-            self.displayMode = array.elementType == .complex64 ? .complexAbs : .scalar
+            self.displayMode = array.elementType.isComplex ? .complexAbs : .scalar
         }
         if let windowLevel {
             setWindowLevel(window: windowLevel.window, level: windowLevel.level)
@@ -287,7 +290,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     }
 
     func setDisplayMode(_ mode: DisplayMode) {
-        guard array?.elementType == .complex64 else {
+        guard array?.elementType.isComplex == true else {
             guard displayMode != .scalar else {
                 return
             }
@@ -429,6 +432,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentBytes(&colorMapRaw, length: MemoryLayout<UInt32>.size, index: 1)
             encoder.setFragmentBytes(&windowLevel, length: MemoryLayout<SIMD2<Float>>.size, index: 2)
             encoder.setFragmentTexture(texture, index: 0)
+            encoder.setFragmentTexture(colorMapTexture, index: 1)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: vertices.count)
         }
 
@@ -486,6 +490,7 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentBytes(&colorMapRaw, length: MemoryLayout<UInt32>.size, index: 1)
         encoder.setFragmentBytes(&windowLevel, length: MemoryLayout<SIMD2<Float>>.size, index: 2)
         encoder.setFragmentTexture(snapshot.texture, index: 0)
+        encoder.setFragmentTexture(colorMapTexture, index: 1)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: vertices.count)
         encoder.endEncoding()
 
@@ -598,104 +603,86 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     private func aligned(_ value: Int, to alignment: Int) -> Int {
         ((value + alignment - 1) / alignment) * alignment
     }
-}
 
-private extension MetalRenderer {
-    static let shaderSource = """
-    #include <metal_stdlib>
-    using namespace metal;
-
-    struct Vertex {
-        float2 position;
-        float2 texCoord;
-    };
-
-    struct VertexOut {
-        float4 position [[position]];
-        float2 texCoord;
-    };
-
-    vertex VertexOut vertex_main(uint vertexID [[vertex_id]],
-                                 constant Vertex *vertices [[buffer(0)]]) {
-        VertexOut out;
-        out.position = float4(vertices[vertexID].position, 0.0, 1.0);
-        out.texCoord = vertices[vertexID].texCoord;
-        return out;
-    }
-
-    float3 ramp(float value,
-                float3 c0,
-                float3 c1,
-                float3 c2,
-                float3 c3,
-                float3 c4) {
-        if (value < 0.25) {
-            return mix(c0, c1, value / 0.25);
-        } else if (value < 0.5) {
-            return mix(c1, c2, (value - 0.25) / 0.25);
-        } else if (value < 0.75) {
-            return mix(c2, c3, (value - 0.5) / 0.25);
+    private func pixelFormat(for elementType: NPYElementType) -> MTLPixelFormat {
+        switch elementType {
+        case .uint8:
+            return .r8Unorm
+        case .uint16:
+            return .r16Unorm
+        case .float32:
+            return .r32Float
+        case .complex64:
+            return .rg32Float
         }
-        return mix(c3, c4, (value - 0.75) / 0.25);
     }
 
-    float3 apply_color_map(float value, uint colorMap) {
-        if (colorMap == 1) {
-            return ramp(
-                value,
-                float3(0.267, 0.005, 0.329),
-                float3(0.231, 0.322, 0.545),
-                float3(0.129, 0.569, 0.549),
-                float3(0.369, 0.788, 0.384),
-                float3(0.993, 0.906, 0.144)
-            );
-        } else if (colorMap == 2) {
-            return ramp(
-                value,
-                float3(0.000, 0.000, 0.016),
-                float3(0.231, 0.059, 0.439),
-                float3(0.549, 0.161, 0.506),
-                float3(0.871, 0.286, 0.408),
-                float3(0.988, 0.992, 0.749)
-            );
-        } else if (colorMap == 3) {
-            return float3(
-                smoothstep(0.00, 0.45, value),
-                smoothstep(0.35, 0.75, value),
-                smoothstep(0.70, 1.00, value)
-            );
+    private static func makeShaderLibrary(device: MTLDevice, explicitURL: URL?) throws -> MTLLibrary {
+        guard let libraryURL = explicitURL ?? defaultShaderLibraryURL() else {
+            throw RendererError.shaderCompile(
+                "Could not find default.metallib. Build with scripts/build.sh or set NPYVIEWER_METALLIB_PATH."
+            )
         }
 
-        return float3(value, value, value);
+        do {
+            return try device.makeLibrary(URL: libraryURL)
+        } catch {
+            throw RendererError.shaderCompile("Could not load \(libraryURL.path): \(error.localizedDescription)")
+        }
     }
 
-    fragment float4 fragment_main(VertexOut in [[stage_in]],
-                                  texture2d<float> image [[texture(0)]],
-                                  constant uint &mode [[buffer(0)]],
-                                  constant uint &colorMap [[buffer(1)]],
-                                  constant float2 &windowLevel [[buffer(2)]]) {
-        constexpr sampler imageSampler(address::clamp_to_edge, filter::linear);
-        float4 sample = image.sample(imageSampler, in.texCoord);
-        float value = sample.r;
-
-        if (mode == 1) {
-            value = length(sample.rg);
-        } else if (mode == 2) {
-            constexpr float pi = 3.14159265358979323846;
-            value = (atan2(sample.g, sample.r) + pi) / (2.0 * pi);
-        } else if (mode == 3) {
-            value = sample.r;
-        } else if (mode == 4) {
-            value = sample.g;
-        } else if (mode == 5) {
-            value = dot(sample.rg, sample.rg);
+    static func defaultShaderLibraryURL() -> URL? {
+        let environment = ProcessInfo.processInfo.environment
+        if let path = environment["NPYVIEWER_METALLIB_PATH"], !path.isEmpty {
+            return URL(fileURLWithPath: path)
         }
 
-        float window = max(windowLevel.x, 0.01);
-        float level = windowLevel.y;
-        value = (value - (level - window * 0.5)) / window;
-        value = clamp(value, 0.0, 1.0);
-        return float4(apply_color_map(value, colorMap), 1.0);
+        return Bundle.main.url(forResource: "default", withExtension: "metallib")
     }
-    """
+
+    private static func makeColorMapTexture(device: MTLDevice) throws -> MTLTexture {
+        let sampleCount = 256
+        let colorMapCount = Int((ColorMap.allCases.map(\.rawValue).max() ?? 0) + 1)
+        let bytesPerPixel = 4
+        let bytesPerRow = sampleCount * bytesPerPixel
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba8Unorm,
+            width: sampleCount,
+            height: colorMapCount,
+            mipmapped: false
+        )
+        descriptor.storageMode = .shared
+        descriptor.usage = [.shaderRead]
+
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            throw RendererError.noTexture
+        }
+
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * colorMapCount)
+        for colorMap in ColorMap.allCases {
+            let row = Int(colorMap.rawValue)
+            for index in 0..<sampleCount {
+                let value = Float(index) / Float(sampleCount - 1)
+                let color = colorMap.color(forNormalizedValue: value)
+                let offset = row * bytesPerRow + index * bytesPerPixel
+                pixels[offset] = colorByte(color.red)
+                pixels[offset + 1] = colorByte(color.green)
+                pixels[offset + 2] = colorByte(color.blue)
+                pixels[offset + 3] = 255
+            }
+        }
+
+        texture.replace(
+            region: MTLRegionMake2D(0, 0, sampleCount, colorMapCount),
+            mipmapLevel: 0,
+            withBytes: pixels,
+            bytesPerRow: bytesPerRow
+        )
+        return texture
+    }
+
+    private static func colorByte(_ value: Float) -> UInt8 {
+        UInt8(clamping: Int((min(max(value, 0), 1) * 255).rounded()))
+    }
 }

@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "NPYViewer",
     platforms: [
-        .macOS(.v15)
+        .macOS(.v11)
     ],
     products: [
         .library(name: "NPYCore", targets: ["NPYCore"]),
@@ -24,7 +24,8 @@ let package = Package(
         .target(
             name: "NPYViewerApp",
             dependencies: ["NPYCore", "NPYViewerSupport"],
-            path: "sources/NPYViewer"
+            path: "sources/NPYViewer",
+            exclude: ["Shaders.metal"]
         ),
         .executableTarget(
             name: "NPYViewer",

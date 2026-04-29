@@ -159,80 +159,14 @@ final class ColorMapScaleView: NSView {
     }
 
     static func color(forNormalizedValue value: Float, colorMap: ColorMap) -> NSColor {
-        let normalizedValue = CGFloat(min(max(value, 0), 1))
-        let color: RGB
-
-        switch colorMap {
-        case .gray:
-            color = RGB(normalizedValue, normalizedValue, normalizedValue)
-        case .viridis:
-            color = ramp(
-                normalizedValue,
-                colors: [
-                    RGB(0.267, 0.005, 0.329),
-                    RGB(0.231, 0.322, 0.545),
-                    RGB(0.129, 0.569, 0.549),
-                    RGB(0.369, 0.788, 0.384),
-                    RGB(0.993, 0.906, 0.144)
-                ]
-            )
-        case .magma:
-            color = ramp(
-                normalizedValue,
-                colors: [
-                    RGB(0.000, 0.000, 0.016),
-                    RGB(0.231, 0.059, 0.439),
-                    RGB(0.549, 0.161, 0.506),
-                    RGB(0.871, 0.286, 0.408),
-                    RGB(0.988, 0.992, 0.749)
-                ]
-            )
-        case .hot:
-            color = RGB(
-                smoothstep(edge0: 0.00, edge1: 0.45, x: normalizedValue),
-                smoothstep(edge0: 0.35, edge1: 0.75, x: normalizedValue),
-                smoothstep(edge0: 0.70, edge1: 1.00, x: normalizedValue)
-            )
-        }
+        let color = colorMap.color(forNormalizedValue: value)
 
         return NSColor(
-            calibratedRed: color.red,
-            green: color.green,
-            blue: color.blue,
+            calibratedRed: CGFloat(color.red),
+            green: CGFloat(color.green),
+            blue: CGFloat(color.blue),
             alpha: 1
         )
-    }
-
-    private typealias RGB = (red: CGFloat, green: CGFloat, blue: CGFloat)
-
-    private static func ramp(_ value: CGFloat, colors: [RGB]) -> RGB {
-        guard let first = colors.first, let last = colors.last else {
-            return RGB(value, value, value)
-        }
-        guard value > 0 else {
-            return first
-        }
-        guard value < 1 else {
-            return last
-        }
-
-        let scaledValue = value * CGFloat(colors.count - 1)
-        let lowerIndex = Int(floor(scaledValue))
-        let fraction = scaledValue - CGFloat(lowerIndex)
-        return mix(colors[lowerIndex], colors[lowerIndex + 1], fraction)
-    }
-
-    private static func mix(_ start: RGB, _ end: RGB, _ fraction: CGFloat) -> RGB {
-        RGB(
-            start.red + (end.red - start.red) * fraction,
-            start.green + (end.green - start.green) * fraction,
-            start.blue + (end.blue - start.blue) * fraction
-        )
-    }
-
-    private static func smoothstep(edge0: CGFloat, edge1: CGFloat, x: CGFloat) -> CGFloat {
-        let t = min(max((x - edge0) / (edge1 - edge0), 0), 1)
-        return t * t * (3 - 2 * t)
     }
 
     private static func valueLabel(for value: Float) -> String {
