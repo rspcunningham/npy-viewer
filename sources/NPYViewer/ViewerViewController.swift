@@ -138,25 +138,29 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
     func openDocument() {
         let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
         if let npyType = UTType(filenameExtension: "npy") {
             panel.allowedContentTypes = [npyType]
         }
 
-        guard panel.runModal() == .OK, let url = panel.url else {
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else {
             return
         }
 
-        open(url: url)
+        open(urls: panel.urls)
     }
 
     func open(url: URL) {
+        open(urls: [url])
+    }
+
+    func open(urls: [URL]) {
         do {
-            try sessionCoordinator.open(url: url, currentState: currentSessionState())
+            try sessionCoordinator.open(urls: urls, currentState: currentSessionState())
         } catch {
-            showError(error, title: "Could Not Open \(url.lastPathComponent)")
+            showError(error, title: openErrorTitle(for: urls))
         }
     }
 
@@ -164,7 +168,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         do {
             try sessionCoordinator.reload(currentState: currentSessionState())
         } catch {
-            let title = sessionCoordinator.directoryURL?.lastPathComponent ?? "Session"
+            let title = sessionCoordinator.sessionTitle
             showError(error, title: "Could Not Reload \(title)")
         }
     }
@@ -176,16 +180,28 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         refreshHoverFromCurrentMouseLocation()
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        fileNavigatorController.numberOfRows(in: tableView)
+    func fileNavigatorItemCount() -> Int {
+        fileNavigatorController.itemCount
     }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        fileNavigatorController.tableView(tableView, viewFor: tableColumn, row: row)
+    func fileNavigatorSourceCount() -> Int {
+        fileNavigatorController.sourceCount
     }
 
-    func imageMetalView(_ view: ImageMetalView, didRequestOpen url: URL) {
-        open(url: url)
+    func fileNavigatorSourceTitle(at index: Int) -> String? {
+        fileNavigatorController.sourceTitle(at: index)
+    }
+
+    func fileNavigatorChildCountForSource(at index: Int) -> Int {
+        fileNavigatorController.childCountForSource(at: index)
+    }
+
+    func fileNavigatorChildTitle(sourceIndex: Int, childIndex: Int) -> String? {
+        fileNavigatorController.childTitle(sourceIndex: sourceIndex, childIndex: childIndex)
+    }
+
+    func imageMetalView(_ view: ImageMetalView, didRequestOpen urls: [URL]) {
+        open(urls: urls)
     }
 
     func imageMetalView(_ view: ImageMetalView, didHoverAt point: CGPoint) {
@@ -263,8 +279,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         sessionCoordinator.onLoadCompleted = { [weak self] result in
             self?.handleLoadResult(result)
         }
-        sessionCoordinator.onSessionCleared = { [weak self] directoryURL, message in
-            self?.clearDisplayedSession(directoryURL: directoryURL, message: message)
+        sessionCoordinator.onSessionCleared = { [weak self] message in
+            self?.clearDisplayedSession(message: message)
         }
 
         pngExportCoordinator.onExportingChanged = { [weak self] _ in
@@ -328,10 +344,10 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         }
     }
 
-    private func clearDisplayedSession(directoryURL: URL?, message: String) {
+    private func clearDisplayedSession(message: String) {
         hoverText = nil
         renderer?.clearArray()
-        onTitleChanged?(directoryURL?.lastPathComponent ?? "NPYViewer")
+        onTitleChanged?(sessionCoordinator.sessionTitle)
         emptyStateLabel.stringValue = message
         emptyStateButton.isHidden = false
         updateInspector()
@@ -345,8 +361,8 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     }
 
     private func updateFileNavigator() {
-        fileNavigatorController.setURLs(sessionCoordinator.itemURLs)
-        fileNavigatorController.selectRow(sessionCoordinator.selectedIndex)
+        fileNavigatorController.setSections(sessionCoordinator.navigatorSections)
+        fileNavigatorController.selectItem(at: sessionCoordinator.selectedIndex)
     }
 
     private func updateInspector() {
@@ -510,8 +526,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
             )
         }
 
-        let currentIndex = sessionCoordinator.selectedIndex ?? fileNavigatorController.selectedRow
-        guard currentIndex >= 0 else {
+        guard let currentIndex = sessionCoordinator.selectedIndex ?? fileNavigatorController.selectedItemIndex else {
             sessionCoordinator.selectItem(at: 0, currentState: currentSessionState())
             return true
         }
@@ -523,6 +538,14 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
         sessionCoordinator.selectItem(at: nextIndex, currentState: currentSessionState())
         return true
+    }
+
+    private func openErrorTitle(for urls: [URL]) -> String {
+        guard urls.count == 1, let url = urls.first else {
+            return "Could Not Open Selected Items"
+        }
+
+        return "Could Not Open \(url.lastPathComponent)"
     }
 }
 

@@ -1,6 +1,6 @@
 import AppKit
 
-final class FileNavigatorTableView: NSTableView {
+final class FileNavigatorOutlineView: NSOutlineView {
     weak var fallbackFirstResponder: NSResponder?
 
     override func mouseDown(with event: NSEvent) {
@@ -22,32 +22,72 @@ final class FileNavigatorTableView: NSTableView {
     }
 }
 
-final class FileNavigatorController: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+private final class FileNavigatorNode: NSObject {
+    enum Kind {
+        case source
+        case file(index: Int)
+    }
+
+    let kind: Kind
+    let title: String
+    let url: URL?
+    let children: [FileNavigatorNode]
+
+    init(kind: Kind, title: String, url: URL?, children: [FileNavigatorNode] = []) {
+        self.kind = kind
+        self.title = title
+        self.url = url
+        self.children = children
+    }
+
+    var itemIndex: Int? {
+        guard case .file(let index) = kind else {
+            return nil
+        }
+
+        return index
+    }
+}
+
+final class FileNavigatorController: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
     let view = NSView()
     let dividerView = NSView()
 
-    private let tableView = FileNavigatorTableView()
+    private let outlineView = FileNavigatorOutlineView()
     private let scrollView = NSScrollView()
     private var widthConstraint: NSLayoutConstraint?
     private var dividerWidthConstraint: NSLayoutConstraint?
-    private var urls: [URL] = []
+    private var rootNodes: [FileNavigatorNode] = []
     private var isSynchronizingSelection = false
 
     var onSelectionChanged: ((Int) -> Void)?
 
     var itemCount: Int {
-        urls.count
+        rootNodes.reduce(0) { count, node in count + node.children.count }
     }
 
-    var selectedRow: Int {
-        tableView.selectedRow
+    var sourceCount: Int {
+        rootNodes.count
+    }
+
+    var visibleRowCount: Int {
+        outlineView.numberOfRows
+    }
+
+    var selectedItemIndex: Int? {
+        let row = outlineView.selectedRow
+        guard row >= 0 else {
+            return nil
+        }
+
+        return (outlineView.item(atRow: row) as? FileNavigatorNode)?.itemIndex
     }
 
     init(fallbackFirstResponder: NSResponder?) {
         super.init()
         configureView()
         configureDivider()
-        configureTable(fallbackFirstResponder: fallbackFirstResponder)
+        configureOutline(fallbackFirstResponder: fallbackFirstResponder)
     }
 
     func setWidthConstraints(_ widthConstraint: NSLayoutConstraint, dividerWidthConstraint: NSLayoutConstraint) {
@@ -56,23 +96,75 @@ final class FileNavigatorController: NSObject, NSTableViewDataSource, NSTableVie
         updateVisibility()
     }
 
-    func setURLs(_ urls: [URL]) {
-        self.urls = urls
-        tableView.reloadData()
+    func setSections(_ sections: [ViewerNavigatorSection]) {
+        rootNodes = sections.map { section in
+            FileNavigatorNode(
+                kind: .source,
+                title: section.title,
+                url: section.url,
+                children: section.items.map { item in
+                    FileNavigatorNode(
+                        kind: .file(index: item.index),
+                        title: item.title,
+                        url: item.url
+                    )
+                }
+            )
+        }
+
+        outlineView.reloadData()
+        rootNodes.forEach { outlineView.expandItem($0) }
         updateVisibility()
     }
 
-    func selectRow(_ row: Int?) {
+    func selectItem(at index: Int?) {
         isSynchronizingSelection = true
         defer { isSynchronizingSelection = false }
 
-        guard let row, urls.indices.contains(row) else {
-            tableView.deselectAll(nil)
+        guard let index, let node = fileNode(for: index) else {
+            outlineView.deselectAll(nil)
             return
         }
 
-        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        tableView.scrollRowToVisible(row)
+        if let parent = parentNode(for: node) {
+            outlineView.expandItem(parent)
+        }
+
+        let row = outlineView.row(forItem: node)
+        guard row >= 0 else {
+            outlineView.deselectAll(nil)
+            return
+        }
+
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        outlineView.scrollRowToVisible(row)
+    }
+
+    func sourceTitle(at index: Int) -> String? {
+        guard rootNodes.indices.contains(index) else {
+            return nil
+        }
+
+        return rootNodes[index].title
+    }
+
+    func childCountForSource(at index: Int) -> Int {
+        guard rootNodes.indices.contains(index) else {
+            return 0
+        }
+
+        return rootNodes[index].children.count
+    }
+
+    func childTitle(sourceIndex: Int, childIndex: Int) -> String? {
+        guard
+            rootNodes.indices.contains(sourceIndex),
+            rootNodes[sourceIndex].children.indices.contains(childIndex)
+        else {
+            return nil
+        }
+
+        return rootNodes[sourceIndex].children[childIndex].title
     }
 
     func restoreFirstResponderAfterNavigation(
@@ -80,54 +172,86 @@ final class FileNavigatorController: NSObject, NSTableViewDataSource, NSTableVie
         previousFirstResponder: NSResponder?,
         fallbackFirstResponder: NSResponder
     ) {
-        guard let window, window.firstResponder === tableView else {
+        guard let window, window.firstResponder === outlineView else {
             return
         }
 
-        if let previousFirstResponder, previousFirstResponder !== tableView {
+        if let previousFirstResponder, previousFirstResponder !== outlineView {
             window.makeFirstResponder(previousFirstResponder)
         } else {
             window.makeFirstResponder(fallbackFirstResponder)
         }
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        urls.count
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        guard let node = item as? FileNavigatorNode else {
+            return rootNodes.count
+        }
+
+        return node.children.count
     }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard urls.indices.contains(row) else {
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        guard let node = item as? FileNavigatorNode else {
+            return rootNodes[index]
+        }
+
+        return node.children[index]
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        guard let node = item as? FileNavigatorNode else {
+            return false
+        }
+
+        return !node.children.isEmpty
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        (item as? FileNavigatorNode)?.itemIndex != nil
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        guard let node = item as? FileNavigatorNode else {
             return nil
         }
 
         let identifier = NSUserInterfaceItemIdentifier("FileNavigatorCell")
         let label: NSTextField
-        if let reusedLabel = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTextField {
+        if let reusedLabel = outlineView.makeView(withIdentifier: identifier, owner: self) as? NSTextField {
             label = reusedLabel
         } else {
             label = NSTextField(labelWithString: "")
             label.identifier = identifier
-            label.font = .systemFont(ofSize: 13)
             label.lineBreakMode = .byTruncatingMiddle
             label.maximumNumberOfLines = 1
+        }
+
+        label.stringValue = node.title
+        label.toolTip = node.url?.path
+
+        switch node.kind {
+        case .source:
+            label.font = .systemFont(ofSize: 11, weight: .semibold)
+            label.textColor = NSColor(white: 0.62, alpha: 1)
+        case .file:
+            label.font = .systemFont(ofSize: 13)
             label.textColor = NSColor(white: 0.86, alpha: 1)
         }
 
-        label.stringValue = urls[row].lastPathComponent
         return label
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) {
+    func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !isSynchronizingSelection else {
             return
         }
 
-        let row = tableView.selectedRow
-        guard row >= 0 else {
+        guard let index = selectedItemIndex else {
             return
         }
 
-        onSelectionChanged?(row)
+        onSelectionChanged?(index)
     }
 
     private func configureView() {
@@ -175,28 +299,46 @@ final class FileNavigatorController: NSObject, NSTableViewDataSource, NSTableVie
         dividerView.isHidden = true
     }
 
-    private func configureTable(fallbackFirstResponder: NSResponder?) {
+    private func configureOutline(fallbackFirstResponder: NSResponder?) {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("filename"))
         column.resizingMask = .autoresizingMask
-        tableView.addTableColumn(column)
-        tableView.headerView = nil
-        tableView.rowHeight = 28
-        tableView.intercellSpacing = NSSize(width: 0, height: 2)
-        tableView.selectionHighlightStyle = .regular
-        tableView.backgroundColor = .clear
-        tableView.fallbackFirstResponder = fallbackFirstResponder
-        tableView.delegate = self
-        tableView.dataSource = self
+        outlineView.addTableColumn(column)
+        outlineView.outlineTableColumn = column
+        outlineView.headerView = nil
+        outlineView.rowHeight = 28
+        outlineView.intercellSpacing = NSSize(width: 0, height: 2)
+        outlineView.selectionHighlightStyle = .regular
+        outlineView.backgroundColor = .clear
+        outlineView.indentationPerLevel = 14
+        outlineView.fallbackFirstResponder = fallbackFirstResponder
+        outlineView.delegate = self
+        outlineView.dataSource = self
 
-        scrollView.documentView = tableView
+        scrollView.documentView = outlineView
     }
 
     private func updateVisibility() {
-        let shouldShowNavigator = urls.count > 1
-        widthConstraint?.constant = shouldShowNavigator ? 240 : 0
+        let shouldShowNavigator = sourceCount > 1 || itemCount > 1
+        widthConstraint?.constant = shouldShowNavigator ? 260 : 0
         dividerWidthConstraint?.constant = shouldShowNavigator ? 1 : 0
         view.isHidden = !shouldShowNavigator
         dividerView.isHidden = !shouldShowNavigator
+    }
+
+    private func fileNode(for index: Int) -> FileNavigatorNode? {
+        for source in rootNodes {
+            if let node = source.children.first(where: { $0.itemIndex == index }) {
+                return node
+            }
+        }
+
+        return nil
+    }
+
+    private func parentNode(for child: FileNavigatorNode) -> FileNavigatorNode? {
+        rootNodes.first { source in
+            source.children.contains { $0 === child }
+        }
     }
 
     private func makeSectionTitleLabel(_ title: String) -> NSTextField {

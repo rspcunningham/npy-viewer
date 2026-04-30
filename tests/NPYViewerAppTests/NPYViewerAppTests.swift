@@ -29,8 +29,8 @@ import Testing
     controller.viewDidLoad()
 
     #expect(controller.view.subviews.count >= 5)
-    #expect(controller.numberOfRows(in: NSTableView()) == 0)
-    #expect(controller.tableView(NSTableView(), viewFor: nil, row: 0) == nil)
+    #expect(controller.fileNavigatorItemCount() == 0)
+    #expect(controller.fileNavigatorSourceCount() == 0)
 
     let imageView = ImageMetalView(frame: NSRect(x: 0, y: 0, width: 120, height: 80), device: nil)
     controller.resetZoom()
@@ -52,36 +52,90 @@ import Testing
     let controller = ViewerViewController()
     controller.loadView()
     controller.open(url: directory)
-    #expect(controller.numberOfRows(in: NSTableView()) == 1)
+    #expect(controller.fileNavigatorSourceCount() == 1)
+    #expect(controller.fileNavigatorItemCount() == 1)
+    #expect(controller.fileNavigatorSourceTitle(at: 0) == directory.lastPathComponent)
 
     let secondURL = directory.appendingPathComponent("second.npy")
     try makeNPY(descr: "<f4", shape: [1, 1], payload: floats([2])).write(to: secondURL)
     controller.reloadSession()
-    #expect(controller.numberOfRows(in: NSTableView()) == 2)
+    #expect(controller.fileNavigatorSourceCount() == 1)
+    #expect(controller.fileNavigatorItemCount() == 2)
 
     try FileManager.default.removeItem(at: firstURL)
     try FileManager.default.removeItem(at: secondURL)
     controller.reloadSession()
-    #expect(controller.numberOfRows(in: NSTableView()) == 0)
+    #expect(controller.fileNavigatorSourceCount() == 1)
+    #expect(controller.fileNavigatorItemCount() == 0)
 }
 
 @MainActor
-@Test func fileNavigatorControllerTracksURLsAndSelection() {
+@Test func viewerControllerAddsSourcesAcrossMultipleOpens() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("NPYViewerMultiOpenTests-\(UUID().uuidString)", isDirectory: true)
+    let firstDirectory = root.appendingPathComponent("first", isDirectory: true)
+    let secondDirectory = root.appendingPathComponent("second", isDirectory: true)
+    try FileManager.default.createDirectory(at: firstDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: secondDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let firstURL = firstDirectory.appendingPathComponent("a.npy")
+    let secondURL = secondDirectory.appendingPathComponent("b.npy")
+    let looseURL = root.appendingPathComponent("loose.npy")
+    try makeNPY(descr: "<f4", shape: [1, 1], payload: floats([1])).write(to: firstURL)
+    try makeNPY(descr: "<f4", shape: [1, 1], payload: floats([2])).write(to: secondURL)
+    try makeNPY(descr: "<f4", shape: [1, 1], payload: floats([3])).write(to: looseURL)
+
+    let controller = ViewerViewController()
+    controller.loadView()
+    controller.open(url: firstDirectory)
+    controller.open(url: secondDirectory)
+    controller.open(url: looseURL)
+
+    #expect(controller.fileNavigatorSourceCount() == 3)
+    #expect(controller.fileNavigatorItemCount() == 3)
+    #expect(controller.fileNavigatorSourceTitle(at: 0) == "first")
+    #expect(controller.fileNavigatorChildTitle(sourceIndex: 0, childIndex: 0) == "a.npy")
+    #expect(controller.fileNavigatorSourceTitle(at: 1) == "second")
+    #expect(controller.fileNavigatorChildTitle(sourceIndex: 1, childIndex: 0) == "b.npy")
+    #expect(controller.fileNavigatorSourceTitle(at: 2) == "Opened Files")
+    #expect(controller.fileNavigatorChildTitle(sourceIndex: 2, childIndex: 0) == "loose.npy")
+}
+
+@MainActor
+@Test func fileNavigatorControllerTracksSectionsAndSelection() {
     let fallback = NSView()
     let controller = FileNavigatorController(fallbackFirstResponder: fallback)
-    let urls = [
-        URL(fileURLWithPath: "/tmp/a.npy"),
-        URL(fileURLWithPath: "/tmp/b.npy")
+    let sections = [
+        ViewerNavigatorSection(
+            title: "first",
+            url: URL(fileURLWithPath: "/tmp/first", isDirectory: true),
+            items: [
+                ViewerNavigatorItem(index: 0, url: URL(fileURLWithPath: "/tmp/first/a.npy"), title: "a.npy"),
+                ViewerNavigatorItem(index: 1, url: URL(fileURLWithPath: "/tmp/first/b.npy"), title: "b.npy")
+            ]
+        ),
+        ViewerNavigatorSection(
+            title: "Opened Files",
+            url: nil,
+            items: [
+                ViewerNavigatorItem(index: 2, url: URL(fileURLWithPath: "/tmp/c.npy"), title: "c.npy")
+            ]
+        )
     ]
 
-    controller.setURLs(urls)
-    #expect(controller.itemCount == 2)
-    #expect(controller.numberOfRows(in: NSTableView()) == 2)
+    controller.setSections(sections)
+    #expect(controller.sourceCount == 2)
+    #expect(controller.itemCount == 3)
+    #expect(controller.sourceTitle(at: 0) == "first")
+    #expect(controller.childCountForSource(at: 0) == 2)
+    #expect(controller.childTitle(sourceIndex: 1, childIndex: 0) == "c.npy")
 
-    controller.selectRow(1)
-    #expect(controller.selectedRow == 1)
+    controller.selectItem(at: 2)
+    #expect(controller.selectedItemIndex == 2)
 
-    controller.setURLs([])
+    controller.setSections([])
+    #expect(controller.sourceCount == 0)
     #expect(controller.itemCount == 0)
 }
 

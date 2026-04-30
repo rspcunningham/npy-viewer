@@ -3,7 +3,7 @@ import MetalKit
 import NPYViewerSupport
 
 protocol ImageMetalViewDelegate: AnyObject {
-    func imageMetalView(_ view: ImageMetalView, didRequestOpen url: URL)
+    func imageMetalView(_ view: ImageMetalView, didRequestOpen urls: [URL])
     func imageMetalView(_ view: ImageMetalView, didHoverAt point: CGPoint)
     func imageMetalViewDidEndHover(_ view: ImageMetalView)
     func imageMetalView(_ view: ImageMetalView, didZoomBy factor: CGFloat, around point: CGPoint)
@@ -88,14 +88,15 @@ final class ImageMetalView: MTKView {
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        openableURL(from: sender.draggingPasteboard) == nil ? [] : .copy
+        openableURLs(from: sender.draggingPasteboard).isEmpty ? [] : .copy
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let url = openableURL(from: sender.draggingPasteboard) else {
+        let urls = openableURLs(from: sender.draggingPasteboard)
+        guard !urls.isEmpty else {
             return false
         }
-        interactionDelegate?.imageMetalView(self, didRequestOpen: url)
+        interactionDelegate?.imageMetalView(self, didRequestOpen: urls)
         return true
     }
 
@@ -122,18 +123,39 @@ final class ImageMetalView: MTKView {
         return CGPoint(x: point.x, y: bounds.height - point.y)
     }
 
-    private func openableURL(from pasteboard: NSPasteboard) -> URL? {
+    private func openableURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true
+        ]
+        if let objects = pasteboard.readObjects(forClasses: [NSURL.self], options: options) {
+            return objects.compactMap { object in
+                if let url = object as? URL {
+                    return url
+                }
+                if let url = object as? NSURL {
+                    return url as URL
+                }
+                return nil
+            }
+            .filter(isOpenableURL)
+        }
+
         guard
             let text = pasteboard.string(forType: .fileURL),
-            let url = URL(string: text)
+            let url = URL(string: text),
+            isOpenableURL(url)
         else {
-            return nil
+            return []
         }
 
+        return [url]
+    }
+
+    private func isOpenableURL(_ url: URL) -> Bool {
         if NPYFileDiscovery.isNPYFile(url) || NPYFileDiscovery.isDirectory(url) {
-            return url
+            return true
         }
 
-        return nil
+        return false
     }
 }

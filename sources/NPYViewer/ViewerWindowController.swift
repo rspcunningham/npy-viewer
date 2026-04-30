@@ -31,6 +31,10 @@ final class ViewerWindowController: NSWindowController {
         viewerViewController.open(url: url)
     }
 
+    func open(urls: [URL]) {
+        viewerViewController.open(urls: urls)
+    }
+
     func openDocument() {
         viewerViewController.openDocument()
     }

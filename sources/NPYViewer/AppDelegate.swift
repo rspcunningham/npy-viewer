@@ -10,16 +10,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         windowController = controller
 
-        for url in pendingOpenURLs {
-            controller.open(url: url)
+        if !pendingOpenURLs.isEmpty {
+            controller.open(urls: pendingOpenURLs)
         }
         pendingOpenURLs.removeAll()
 
+        var argumentURLs: [URL] = []
         for argument in CommandLine.arguments.dropFirst() {
             let url = URL(fileURLWithPath: argument)
             if FileManager.default.fileExists(atPath: url.path) {
-                controller.open(url: url)
+                argumentURLs.append(url)
             }
+        }
+        if !argumentURLs.isEmpty {
+            controller.open(urls: argumentURLs)
         }
 
         NSApp.setActivationPolicy(.regular)
@@ -32,9 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        for url in urls {
-            controller.open(url: url)
-        }
+        controller.open(urls: urls)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
