@@ -54,6 +54,12 @@ struct ViewerNavigatorSection {
     let items: [ViewerNavigatorItem]
 }
 
+struct ViewerSessionFileChangeWatchTarget {
+    let directoryURLs: [URL]
+    let fileURLs: [URL]
+    let selectedFileURL: URL?
+}
+
 struct ViewerWindowLevelState {
     let window: Float
     let level: Float
@@ -72,6 +78,8 @@ struct ViewerSessionLoadContext {
     let shouldPreserveViewport: Bool
     let windowLevelState: ViewerWindowLevelState?
     let displayModeState: DisplayMode?
+    let isAutomaticReload: Bool
+    let previousDisplayedURL: URL?
 }
 
 enum ViewerSessionLoadResult {
@@ -143,6 +151,22 @@ final class ViewerSessionCoordinator {
         !sources.isEmpty || !items.isEmpty || displayedURL != nil
     }
 
+    var fileChangeWatchTarget: ViewerSessionFileChangeWatchTarget? {
+        guard !sources.isEmpty else {
+            return nil
+        }
+
+        return ViewerSessionFileChangeWatchTarget(
+            directoryURLs: sources.compactMap { source in
+                source.kind == .directory ? source.url : nil
+            },
+            fileURLs: sources
+                .filter { $0.kind == .looseFiles }
+                .flatMap(\.fileURLs),
+            selectedFileURL: displayedURL ?? selectedURL
+        )
+    }
+
     func open(url: URL, currentState: ViewerSessionCurrentState) throws {
         try open(urls: [url], currentState: currentState)
     }
@@ -164,10 +188,14 @@ final class ViewerSessionCoordinator {
             return
         }
 
-        startLoadingItem(at: selectedIndex, preservingViewport: false)
+        startLoadingItem(
+            at: selectedIndex,
+            preservingViewport: false,
+            isAutomaticReload: false
+        )
     }
 
-    func reload(currentState: ViewerSessionCurrentState) throws {
+    func reload(currentState: ViewerSessionCurrentState, isAutomatic: Bool = false) throws {
         saveCurrentState(currentState)
         guard !sources.isEmpty else {
             return
@@ -196,7 +224,11 @@ final class ViewerSessionCoordinator {
             preferredURL: previousSelectedURL,
             previousIndex: previousSelectedIndex
         )
-        startLoadingItem(at: index, preservingViewport: true)
+        startLoadingItem(
+            at: index,
+            preservingViewport: true,
+            isAutomaticReload: isAutomatic
+        )
     }
 
     func selectItem(
@@ -234,13 +266,18 @@ final class ViewerSessionCoordinator {
         return "\(source.title) - \(url.lastPathComponent)"
     }
 
-    private func startLoadingItem(at index: Int, preservingViewport: Bool) {
+    private func startLoadingItem(
+        at index: Int,
+        preservingViewport: Bool,
+        isAutomaticReload: Bool = false
+    ) {
         guard items.indices.contains(index) else {
             return
         }
 
         requestID &+= 1
         let requestID = requestID
+        let previousDisplayedURL = displayedURL
         selectedIndex = index
         displayedURL = nil
         let url = items[index].url
@@ -248,7 +285,9 @@ final class ViewerSessionCoordinator {
             url: url,
             shouldPreserveViewport: preservingViewport,
             windowLevelState: windowLevelByURL[url],
-            displayModeState: displayModeByURL[url]
+            displayModeState: displayModeByURL[url],
+            isAutomaticReload: isAutomaticReload,
+            previousDisplayedURL: previousDisplayedURL
         )
 
         onItemsChanged?()
