@@ -38,6 +38,8 @@ struct ViewerSessionLoadContext {
     let shouldPreserveViewport: Bool
     let windowLevelState: ViewerWindowLevelState?
     let displayModeState: DisplayMode?
+    let isAutomaticReload: Bool
+    let previousDisplayedURL: URL?
 }
 
 enum ViewerSessionLoadResult {
@@ -93,15 +95,16 @@ final class ViewerSessionCoordinator {
             selectedIndex: 0,
             preservingViewSettings: false,
             preservingViewport: false,
+            isAutomaticReload: false,
             currentState: currentState
         )
     }
 
-    func reload(currentState: ViewerSessionCurrentState) throws {
+    func reload(currentState: ViewerSessionCurrentState, isAutomatic: Bool = false) throws {
         saveCurrentState(currentState)
 
         if let directoryURL {
-            try reloadDirectory(directoryURL, currentState: currentState)
+            try reloadDirectory(directoryURL, currentState: currentState, isAutomatic: isAutomatic)
             return
         }
 
@@ -115,6 +118,7 @@ final class ViewerSessionCoordinator {
             selectedIndex: 0,
             preservingViewSettings: true,
             preservingViewport: true,
+            isAutomaticReload: isAutomatic,
             currentState: currentState
         )
     }
@@ -163,11 +167,16 @@ final class ViewerSessionCoordinator {
             selectedIndex: 0,
             preservingViewSettings: false,
             preservingViewport: false,
+            isAutomaticReload: false,
             currentState: currentState
         )
     }
 
-    private func reloadDirectory(_ directoryURL: URL, currentState: ViewerSessionCurrentState) throws {
+    private func reloadDirectory(
+        _ directoryURL: URL,
+        currentState: ViewerSessionCurrentState,
+        isAutomatic: Bool
+    ) throws {
         let previousSelectedURL = selectedURL ?? displayedURL
         let previousSelectedIndex = selectedIndex
         let urls = try NPYFileDiscovery.npyFiles(in: directoryURL)
@@ -190,6 +199,7 @@ final class ViewerSessionCoordinator {
             selectedIndex: selectedIndex,
             preservingViewSettings: true,
             preservingViewport: true,
+            isAutomaticReload: isAutomatic,
             currentState: currentState
         )
     }
@@ -200,6 +210,7 @@ final class ViewerSessionCoordinator {
         selectedIndex: Int,
         preservingViewSettings: Bool,
         preservingViewport: Bool,
+        isAutomaticReload: Bool,
         currentState: ViewerSessionCurrentState
     ) {
         saveCurrentState(currentState)
@@ -217,16 +228,25 @@ final class ViewerSessionCoordinator {
             displayModeByURL = [:]
         }
 
-        startLoadingItem(at: selectedIndex, preservingViewport: preservingViewport)
+        startLoadingItem(
+            at: selectedIndex,
+            preservingViewport: preservingViewport,
+            isAutomaticReload: isAutomaticReload
+        )
     }
 
-    private func startLoadingItem(at index: Int, preservingViewport: Bool) {
+    private func startLoadingItem(
+        at index: Int,
+        preservingViewport: Bool,
+        isAutomaticReload: Bool = false
+    ) {
         guard items.indices.contains(index) else {
             return
         }
 
         requestID &+= 1
         let requestID = requestID
+        let previousDisplayedURL = displayedURL
         selectedIndex = index
         displayedURL = nil
         let url = items[index].url
@@ -234,7 +254,9 @@ final class ViewerSessionCoordinator {
             url: url,
             shouldPreserveViewport: preservingViewport,
             windowLevelState: windowLevelByURL[url],
-            displayModeState: displayModeByURL[url]
+            displayModeState: displayModeByURL[url],
+            isAutomaticReload: isAutomaticReload,
+            previousDisplayedURL: previousDisplayedURL
         )
 
         onItemsChanged?()

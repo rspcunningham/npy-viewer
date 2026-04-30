@@ -23,6 +23,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     private let inspectorViewController = InspectorViewController()
     private let sessionCoordinator = ViewerSessionCoordinator()
     private let pngExportCoordinator = PNGExportCoordinator()
+    private let fileChangeWatcher = FileChangeWatcher()
     private let sidebarWidth: CGFloat = 248
 
     private lazy var fileNavigatorController = FileNavigatorController(fallbackFirstResponder: metalView)
@@ -134,6 +135,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         if let keyDownMonitor {
             NSEvent.removeMonitor(keyDownMonitor)
         }
+        fileChangeWatcher.stop()
     }
 
     func openDocument() {
@@ -155,15 +157,26 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
     func open(url: URL) {
         do {
             try sessionCoordinator.open(url: url, currentState: currentSessionState())
+            startFileChangeWatcher()
         } catch {
             showError(error, title: "Could Not Open \(url.lastPathComponent)")
         }
     }
 
     func reloadSession() {
+        reloadSession(isAutomatic: false)
+    }
+
+    private func reloadSession(isAutomatic: Bool) {
         do {
-            try sessionCoordinator.reload(currentState: currentSessionState())
+            try sessionCoordinator.reload(currentState: currentSessionState(), isAutomatic: isAutomatic)
+            startFileChangeWatcher()
         } catch {
+            guard !isAutomatic else {
+                NSLog("Could not auto-reload session: \(error.localizedDescription)")
+                return
+            }
+
             let title = sessionCoordinator.directoryURL?.lastPathComponent ?? "Session"
             showError(error, title: "Could Not Reload \(title)")
         }
@@ -288,6 +301,13 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
         case .success(let array, let context):
             finishOpen(array: array, context: context)
         case .failure(let error, let context):
+            if context.isAutomaticReload {
+                sessionCoordinator.markDisplayed(context.previousDisplayedURL)
+                NSLog("Could not auto-reload \(context.url.path): \(error.localizedDescription)")
+                updateInspector()
+                return
+            }
+
             renderer?.clearArray()
             sessionCoordinator.markDisplayed(nil)
             onTitleChanged?(sessionCoordinator.title(for: context.url))
@@ -317,6 +337,7 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
             sessionCoordinator.markDisplayed(context.url)
             onTitleChanged?(sessionCoordinator.title(for: context.url))
             updateInspector()
+            startFileChangeWatcher()
             refreshHoverFromCurrentMouseLocation()
         } catch {
             hoverText = previousHoverText
@@ -393,6 +414,36 @@ final class ViewerViewController: NSViewController, ImageMetalViewDelegate {
 
         hoverText = text
         updateInspector()
+    }
+
+    private func startFileChangeWatcher() {
+        guard let target = currentFileChangeWatchTarget() else {
+            fileChangeWatcher.stop()
+            return
+        }
+
+        do {
+            try fileChangeWatcher.startWatching(target: target) { [weak self] in
+                self?.reloadSession(isAutomatic: true)
+            }
+        } catch {
+            NSLog("Could not watch files for changes: \(error.localizedDescription)")
+        }
+    }
+
+    private func currentFileChangeWatchTarget() -> FileChangeWatcher.Target? {
+        if let directoryURL = sessionCoordinator.directoryURL {
+            return .directory(
+                directoryURL,
+                selectedFileURL: sessionCoordinator.displayedURL ?? sessionCoordinator.selectedURL
+            )
+        }
+
+        guard let url = sessionCoordinator.selectedURL ?? sessionCoordinator.displayedURL ?? sessionCoordinator.itemURLs.first else {
+            return nil
+        }
+
+        return .file(url)
     }
 
     private func currentSessionState() -> ViewerSessionCurrentState {
