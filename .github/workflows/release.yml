@@ -86,6 +86,15 @@ jobs:
                   export APP_VERSION="${APP_VERSION#v}"
                   ./scripts/package_release.sh
 
+            - name: Upload release assets
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-assets-${{ env.RELEASE_TAG }}
+                  path: |
+                      dist/release/*.zip
+                      dist/release/SHA256SUMS.txt
+                  if-no-files-found: error
+
             - name: Create or update GitHub Release
               env:
                   GH_TOKEN: ${{ github.token }}
