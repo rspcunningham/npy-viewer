@@ -4,12 +4,18 @@ on:
     push:
         tags:
             - "v*"
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: Existing annotated release tag to publish
+                required: true
+                type: string
 
 permissions:
     contents: write
 
 concurrency:
-    group: release-${{ github.ref }}
+    group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
     cancel-in-progress: false
 
 jobs:
@@ -17,12 +23,15 @@ jobs:
         name: Build, sign, notarize, and release
         runs-on: macos-26
         timeout-minutes: 30
+        env:
+            RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
         steps:
             - name: Checkout
               uses: actions/checkout@v6
               with:
                   fetch-depth: 0
+                  ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
             - name: Import Developer ID certificate
               env:
@@ -60,11 +69,11 @@ jobs:
                   security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
             - name: Test
-              run: swift test
+              run: ./scripts/test.sh
 
             - name: Build signed and notarized app
               env:
-                  APP_VERSION: ${{ github.ref_name }}
+                  APP_VERSION: ${{ env.RELEASE_TAG }}
                   BUILD_NUMBER: ${{ github.run_number }}
                   APPLE_ID: ${{ secrets.APPLE_ID }}
                   APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -83,21 +92,22 @@ jobs:
               run: |
                   set -euo pipefail
 
-                  APP_VERSION="${GITHUB_REF_NAME#v}"
+                  TAG_COMMIT="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+                  APP_VERSION="${RELEASE_TAG#v}"
                   ZIP="dist/release/NPYViewer-${APP_VERSION}-macOS-arm64.zip"
                   CHECKSUMS="dist/release/SHA256SUMS.txt"
                   RELEASE_BODY="$RUNNER_TEMP/release-body.md"
                   TAG_MESSAGE="$RUNNER_TEMP/tag-message.md"
 
-                  if ! git rev-parse --verify "refs/tags/${GITHUB_REF_NAME}^{tag}" >/dev/null 2>&1; then
+                  if ! git rev-parse --verify "refs/tags/${RELEASE_TAG}^{tag}" >/dev/null 2>&1; then
                     echo "Release tags must be annotated and contain release notes." >&2
-                    echo "Create one with: git tag -a ${GITHUB_REF_NAME} -F <notes-file>" >&2
+                    echo "Create one with: git tag -a ${RELEASE_TAG} -F <notes-file>" >&2
                     exit 1
                   fi
 
-                  git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' > "$TAG_MESSAGE"
+                  git for-each-ref "refs/tags/${RELEASE_TAG}" --format='%(contents)' > "$TAG_MESSAGE"
                   if ! grep -q '[^[:space:]]' "$TAG_MESSAGE"; then
-                    echo "Annotated tag ${GITHUB_REF_NAME} has an empty message." >&2
+                    echo "Annotated tag ${RELEASE_TAG} has an empty message." >&2
                     exit 1
                   fi
 
@@ -119,16 +129,16 @@ jobs:
                     echo
                     echo "Built from commit:"
                     echo '```'
-                    echo "$GITHUB_SHA"
+                    echo "$TAG_COMMIT"
                     echo '```'
                   } > "$RELEASE_BODY"
 
-                  if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-                    gh release upload "$GITHUB_REF_NAME" "$ZIP" "$CHECKSUMS" --clobber
-                    gh release edit "$GITHUB_REF_NAME" --notes-file "$RELEASE_BODY"
+                  if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+                    gh release upload "$RELEASE_TAG" "$ZIP" "$CHECKSUMS" --clobber
+                    gh release edit "$RELEASE_TAG" --notes-file "$RELEASE_BODY"
                   else
-                    gh release create "$GITHUB_REF_NAME" "$ZIP" "$CHECKSUMS" \
-                      --target "$GITHUB_SHA" \
-                      --title "NPYViewer $GITHUB_REF_NAME" \
+                    gh release create "$RELEASE_TAG" "$ZIP" "$CHECKSUMS" \
+                      --target "$TAG_COMMIT" \
+                      --title "NPYViewer $RELEASE_TAG" \
                       --notes-file "$RELEASE_BODY"
                   fi
