@@ -2,8 +2,8 @@
 set -euo pipefail
 
 APP_NAME="NPYViewer"
-REPO="rspcunningham/npy-viewer"
-ASSET_PATTERN="macOS-arm64.zip"
+REPO="${NPYVIEWER_REPO:-rspcunningham/npy-viewer}"
+ASSET_SUFFIX="macOS-arm64.zip"
 DEFAULT_INSTALL_DIR="/Applications"
 
 fail() {
@@ -15,18 +15,13 @@ need_command() {
   command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  fail "NPYViewer is a macOS app; this installer only runs on macOS"
-fi
+[[ "$(uname -s)" == "Darwin" ]] || fail "$APP_NAME is a macOS app"
+[[ "$(uname -m)" == "arm64" ]] || fail "$APP_NAME releases are built for Apple Silicon Macs"
 
-if [[ "$(uname -m)" != "arm64" ]]; then
-  fail "this release artifact is built for Apple Silicon Macs (arm64)"
-fi
-
+need_command codesign
 need_command curl
 need_command ditto
 need_command shasum
-need_command codesign
 need_command spctl
 
 if [[ -n "${INSTALL_DIR:-}" ]]; then
@@ -43,57 +38,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
-api_url="https://api.github.com/repos/$REPO/releases/latest"
-metadata="$(
-  curl -fsSL \
-    -H "Accept: application/vnd.github+json" \
-    -H "X-GitHub-Api-Version: 2022-11-28" \
-    "$api_url"
-)"
-
-tag="$(
-  printf '%s\n' "$metadata" |
-    awk -F'"' '/"tag_name"[[:space:]]*:/ { print $4; exit }'
-)"
-
-asset_url="$(
-  printf '%s\n' "$metadata" |
-    awk -F'"' -v pattern="$ASSET_PATTERN" '/"browser_download_url"[[:space:]]*:/ && $4 ~ pattern { print $4; exit }'
-)"
-
-checksum_url="$(
-  printf '%s\n' "$metadata" |
-    awk -F'"' '/"browser_download_url"[[:space:]]*:/ && $4 ~ /SHA256SUMS\.txt$/ { print $4; exit }'
-)"
-
-if [[ -z "$tag" || -z "$asset_url" || -z "$checksum_url" ]]; then
-  fail "could not find a latest $ASSET_PATTERN release asset for $REPO"
-fi
-
-zip_path="$tmp_dir/$APP_NAME.zip"
+release_base="https://github.com/$REPO/releases/latest/download"
 checksum_path="$tmp_dir/SHA256SUMS.txt"
+zip_path="$tmp_dir/$APP_NAME.zip"
 extract_dir="$tmp_dir/extract"
+
 mkdir -p "$extract_dir" "$install_dir"
 
-printf 'Installing latest %s %s...\n' "$APP_NAME" "$tag"
-printf 'Downloading archive...\n'
-curl -fL "$asset_url" -o "$zip_path"
+printf 'Resolving latest %s release...\n' "$APP_NAME"
+curl -fsSL "$release_base/SHA256SUMS.txt" -o "$checksum_path"
 
-printf 'Downloading checksum...\n'
-curl -fsSL "$checksum_url" -o "$checksum_path"
+asset_name="$(
+  awk -v suffix="$ASSET_SUFFIX" '$2 ~ suffix "$" { print $2; exit }' "$checksum_path"
+)"
+[[ -n "$asset_name" ]] || fail "latest release does not include a $ASSET_SUFFIX asset"
 
 expected_sha="$(
-  awk -v file="$(basename "$asset_url")" '$2 == file { print $1; exit }' "$checksum_path"
+  awk -v file="$asset_name" '$2 == file { print $1; exit }' "$checksum_path"
 )"
+[[ -n "$expected_sha" ]] || fail "latest release does not include a checksum for $asset_name"
 
-if [[ -z "$expected_sha" ]]; then
-  fail "could not find checksum for $(basename "$asset_url")"
-fi
+printf 'Downloading %s...\n' "$asset_name"
+curl -fL "$release_base/$asset_name" -o "$zip_path"
 
 actual_sha="$(shasum -a 256 "$zip_path" | awk '{ print $1 }')"
-if [[ "$actual_sha" != "$expected_sha" ]]; then
-  fail "checksum mismatch for $(basename "$asset_url")"
-fi
+[[ "$actual_sha" == "$expected_sha" ]] || fail "checksum mismatch for $asset_name"
 
 printf 'Extracting...\n'
 ditto -x -k "$zip_path" "$extract_dir"
@@ -114,5 +83,4 @@ ditto "$source_app" "$target_app"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
   -f "$target_app" >/dev/null 2>&1 || true
 
-printf '\nInstalled %s %s at:\n  %s\n\n' "$APP_NAME" "$tag" "$target_app"
-printf 'Open it with:\n  open "%s"\n' "$target_app"
+printf '\nInstalled %s at:\n  %s\n' "$APP_NAME" "$target_app"

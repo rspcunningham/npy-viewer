@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, notarize, and release
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate release ref
+        run: |
+          if [[ "$GITHUB_REF_TYPE" != "tag" || ! "$GITHUB_REF_NAME" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "::error::Run releases from a vMAJOR.MINOR.PATCH git tag, for example v1.2.3."
+            exit 1
+          fi
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Run tests
+        run: ./scripts/test.sh
+
+      - name: Install Developer ID certificate
+        env:
+          DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
+          DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          test -n "$DEVELOPER_ID_CERTIFICATE_BASE64"
+          test -n "$DEVELOPER_ID_CERTIFICATE_PASSWORD"
+
+          certificate_path="$RUNNER_TEMP/developer_id_application.p12"
+          keychain_path="$RUNNER_TEMP/app-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+
+          printf '%s' "$DEVELOPER_ID_CERTIFICATE_BASE64" | base64 --decode >"$certificate_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -P "$DEVELOPER_ID_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+
+      - name: Build, sign, notarize, and package
+        id: package
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: ./scripts/package_release.sh
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archive="${{ steps.package.outputs.archive }}"
+          checksum="${{ steps.package.outputs.checksum }}"
+          tag="${{ github.ref_name }}"
+
+          gh release create "$tag" \
+            "$archive" \
+            "$checksum" \
+            --verify-tag \
+            --title "NPYViewer $tag" \
+            --generate-notes
+
+      - name: Clean up signing keychain
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" >/dev/null 2>&1 || true

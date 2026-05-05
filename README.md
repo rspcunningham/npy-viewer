@@ -1,6 +1,6 @@
 # NPYViewer
 
-Native macOS `.npy` viewer for real and complex-valued images. 
+Native macOS `.npy` viewer for real and complex-valued images.
 
 ![UI Screenshot](/docs/ui.png)
 
@@ -14,7 +14,6 @@ Install or update:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/rspcunningham/npy-viewer/main/install.sh | bash
 ```
-
 
 ## Build
 
